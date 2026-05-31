@@ -29,9 +29,9 @@ class FactSheetItem(BaseModel):
 
 class ReportData(BaseModel):
     reasoning_process: str = Field(description="팩트 체크 및 추론 과정")
-    current_price: str = Field(description="프롬프트로 주입된 데이터 사용")
-    price_change_percent: str = Field(description="프롬프트로 주입된 데이터 사용")
-    market_cap: str = Field(description="프롬프트로 주입된 데이터 사용")
+    current_price: str = Field(description="프롬프트 주입 데이터 우선 사용")
+    price_change_percent: str = Field(description="프롬프트 주입 데이터 우선 사용")
+    market_cap: str = Field(description="프롬프트 주입 데이터 우선 사용")
     industry_type: str
     timestamp: str
     recent_issues: List[IssueItem]
@@ -107,14 +107,14 @@ class RadarData(BaseModel):
 # 2. UI 및 Firebase 통신 설정
 # ==========================================
 st.set_page_config(page_title="Alpha-Logic 분석기", layout="wide")
-st.title("📈 Alpha-Logic 주식 분석기 (오토매틱 하이브리드)")
+st.title("📈 Alpha-Logic 주식 분석기 (데이터 수집 강화형)")
 
 with st.sidebar:
     st.header("⚙️ 시스템 상태")
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         PROJECT_ID = st.secrets.get("FIREBASE_PROJECT_ID", "")
-        st.success("✅ 2.5 Flash + 자동 종목코드 변환기 가동 중")
+        st.success("✅ 2.5 Flash + 자동 종목코드 및 2중 수집기 가동 중")
     except Exception as e:
         api_key = ""
         PROJECT_ID = ""
@@ -138,7 +138,7 @@ def save_to_firestore(ticker, tab_name, data):
         pass
 
 # ==========================================
-# 3. AI 기반 자동 종목코드(Ticker) 변환기
+# 3. AI 기반 자동 종목코드(Ticker) 변환기 (강력 정제)
 # ==========================================
 def get_auto_ticker(company_name):
     if not api_key: return company_name
@@ -148,34 +148,51 @@ def get_auto_ticker(company_name):
         사용자가 입력한 기업명의 Yahoo Finance 전용 Ticker(종목코드)만 정확히 1개 출력하라.
         - 한국 코스피 주식은 뒤에 .KS를 붙인다 (예: 삼성전자 -> 005930.KS)
         - 한국 코스닥 주식은 뒤에 .KQ를 붙인다 (예: 에코프로 -> 086520.KQ)
-        - 미국 주식은 그대로 출력한다 (예: 애플 -> AAPL, 테슬라 -> TSLA)
-        - 어떠한 부연 설명이나 마크다운 없이 오직 영어/숫자 코드로만 대답하라.
+        - 미국 주식은 그대로 출력한다 (예: 애플 -> AAPL)
+        - 어떠한 부연 설명 없이 코드만 대답하라.
         """
         res = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=company_name,
             config=types.GenerateContentConfig(system_instruction=sys_prompt, temperature=0.0)
         )
-        return res.text.strip().replace("`", "")
+        raw_ticker = res.text.strip()
+        
+        # [팩트 강화] AI가 헛소리를 섞었을 경우 대비, 정규식으로 영문/숫자/마침표만 강제 추출
+        match = re.search(r'[A-Za-z0-9.]+', raw_ticker)
+        if match:
+            return match.group(0).upper()
+        return raw_ticker.upper()
     except:
         return company_name
 
 # ==========================================
-# 4. 실시간 주가 수집 (yfinance API)
+# 4. 실시간 주가 수집 (yfinance API - 2중 안전장치)
 # ==========================================
 def fetch_realtime_data(ticker_symbol):
     try:
-        # 안전망: AI가 .KS를 빼먹고 숫자만 반환했을 경우 자동 보정
-        if ticker_symbol.isdigit() and len(ticker_symbol) == 6:
-            ticker_symbol += ".KS"
-            
+        # 안전망: 코드에 문자열이 섞여 들어왔을 수 있으니 공백 제거
+        ticker_symbol = ticker_symbol.strip()
+        
         stock = yf.Ticker(ticker_symbol)
         info = stock.info
         
+        # 1차 시도: info(기본 메타데이터)에서 수집
         current_price = info.get('currentPrice', info.get('regularMarketPrice', None))
         prev_close = info.get('previousClose', None)
         market_cap = info.get('marketCap', None)
         
+        # 2차 시도 (팩트 강화): 야후 서버가 info 접근을 막았을 경우 차트(history) 데이터에서 강제 추출
+        if current_price is None:
+            hist = stock.history(period="5d")
+            if not hist.empty:
+                current_price = float(hist['Close'].iloc[-1])
+                if len(hist) > 1:
+                    prev_close = float(hist['Close'].iloc[-2])
+        
+        if current_price is None:
+            return "조회 실패(야후 응답없음)", "조회 실패", "조회 실패", ticker_symbol
+
         # 포맷팅 연산
         price_str = f"{current_price:,.0f}" if current_price else "데이터 없음"
         
@@ -197,7 +214,7 @@ def fetch_realtime_data(ticker_symbol):
             
         return price_str, change_str, cap_str, ticker_symbol
     except Exception as e:
-        return "조회 실패", "조회 실패", "조회 실패", ticker_symbol
+        return f"조회 실패(에러)", "조회 실패", "조회 실패", ticker_symbol
 
 # ==========================================
 # 5. Alpha-Logic 엔진 (프롬프트 주입 방식)
@@ -257,35 +274,30 @@ tab1, tab2, tab3, tab4 = st.tabs(["📋 종합 리포트", "💎 펀더멘털 �
 # --- 탭 1 ---
 with tab1:
     st.subheader("📋 실시간 융합 리포트 분석")
-    # 종목코드 입력란 삭제! 이름만 하나만 편하게 입력받습니다.
     company_1 = st.text_input("기업명 입력 (예: 삼성전자, 애플, 테슬라):", key="c1_name")
     
     if st.button("분석 실행", key="b1") and company_1:
-        with st.spinner(f"[{company_1}]의 정확한 종목코드를 AI가 탐색 중입니다..."):
-            # 1단계: AI가 기업명을 Ticker로 자동 변환
+        with st.spinner(f"[{company_1}]의 정확한 종목코드를 탐색 중입니다..."):
             smart_ticker = get_auto_ticker(company_1)
             
-        with st.spinner(f"주가 수집 및 정밀 분석 중... (인식된 코드: {smart_ticker})"):
-            # 2단계: 자동 변환된 Ticker로 실시간 데이터 스크래핑
+        with st.spinner(f"주가 수집 및 정밀 분석 중... (매핑 코드: {smart_ticker})"):
             live_price, live_change, live_cap, final_ticker = fetch_realtime_data(smart_ticker)
             
-            # 3단계: AI에게 실시간 데이터를 강제 주입하는 프롬프트 생성
             sys_p = f"""너는 Alpha-Logic이다. 
             [시스템이 수집한 실시간 절대 팩트]
             - 현재가: {live_price}
             - 변동률: {live_change}
             - 시가총액: {live_cap}
             
-            위 실시간 데이터를 JSON의 current_price, price_change_percent, market_cap 항목에 반드시 그대로 입력하라. 나머지 정성적 분석(투자의견, 업종, 이슈)은 너의 사전 지식을 활용하라."""
+            위 실시간 데이터를 JSON의 current_price, price_change_percent, market_cap 항목에 반드시 그대로 입력하라. 나머지 정성적 분석은 너의 객관적 사전 지식을 활용하라."""
             
             res = ask_alpha_logic(f"{company_1} 종합 분석", sys_p, ReportData)
             if res:
                 save_to_firestore(company_1, "종합리포트", res)
                 
-                with st.expander(f"🤖 자동 인식된 종목코드: {final_ticker}"):
+                with st.expander(f"🤖 자동 변환된 종목코드: {final_ticker}"):
                     st.write(res.get('reasoning_process', '기록 없음'))
 
-                # 엔진이 반환한 데이터 표출
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("현재가/최근가", res.get('current_price', live_price))
                 col2.metric("변동", res.get('price_change_percent', live_change))
