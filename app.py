@@ -107,14 +107,14 @@ class RadarData(BaseModel):
 # 2. UI 및 Firebase 통신 설정
 # ==========================================
 st.set_page_config(page_title="Alpha-Logic 분석기", layout="wide")
-st.title("📈 Alpha-Logic 주식 분석기 (하이브리드 실시간 연동)")
+st.title("📈 Alpha-Logic 주식 분석기 (오토매틱 하이브리드)")
 
 with st.sidebar:
     st.header("⚙️ 시스템 상태")
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         PROJECT_ID = st.secrets.get("FIREBASE_PROJECT_ID", "")
-        st.success("✅ 2.5 Flash + yfinance 파이프라인 가동 중")
+        st.success("✅ 2.5 Flash + 자동 종목코드 변환기 가동 중")
     except Exception as e:
         api_key = ""
         PROJECT_ID = ""
@@ -137,42 +137,35 @@ def save_to_firestore(ticker, tab_name, data):
     except:
         pass
 
-def load_history_from_firestore():
-    if not PROJECT_ID: return []
-    url = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents/analysis_logs"
+# ==========================================
+# 3. AI 기반 자동 종목코드(Ticker) 변환기
+# ==========================================
+def get_auto_ticker(company_name):
+    if not api_key: return company_name
     try:
-        res = requests.get(url)
-        if res.status_code == 200:
-            docs = res.json().get('documents', [])
-            history = []
-            for doc in docs:
-                fields = doc['fields']
-                history.append({
-                    "ticker": fields['ticker']['stringValue'],
-                    "tab": fields['tab']['stringValue'],
-                    "json_data": json.loads(fields['json_data']['stringValue']),
-                    "timestamp": fields['timestamp']['stringValue']
-                })
-            return history
+        client = genai.Client(api_key=api_key)
+        sys_prompt = """
+        사용자가 입력한 기업명의 Yahoo Finance 전용 Ticker(종목코드)만 정확히 1개 출력하라.
+        - 한국 코스피 주식은 뒤에 .KS를 붙인다 (예: 삼성전자 -> 005930.KS)
+        - 한국 코스닥 주식은 뒤에 .KQ를 붙인다 (예: 에코프로 -> 086520.KQ)
+        - 미국 주식은 그대로 출력한다 (예: 애플 -> AAPL, 테슬라 -> TSLA)
+        - 어떠한 부연 설명이나 마크다운 없이 오직 영어/숫자 코드로만 대답하라.
+        """
+        res = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=company_name,
+            config=types.GenerateContentConfig(system_instruction=sys_prompt, temperature=0.0)
+        )
+        return res.text.strip().replace("`", "")
     except:
-        return []
-    return []
-
-history_data = load_history_from_firestore()
-if history_data:
-    with st.sidebar.expander("📚 가족 최근 분석 기록 (최신순)"):
-        for item in reversed(history_data[-15:]):
-            if st.button(f"[{item['tab']}] {item['ticker']} ({item['timestamp']})", key=f"btn_{item['timestamp']}"):
-                st.session_state[f"cached_{item['tab']}_{item['ticker']}"] = item['json_data']
-                st.success(f"{item['ticker']} 데이터를 불러왔습니다. 본문 탭을 확인하세요.")
+        return company_name
 
 # ==========================================
-# 3. 실시간 주가 수집 (yfinance API)
+# 4. 실시간 주가 수집 (yfinance API)
 # ==========================================
 def fetch_realtime_data(ticker_symbol):
     try:
-        # 한국 주식(6자리 숫자)인 경우 자동으로 .KS(코스피) 또는 .KQ(코스닥) 처리가 필요하나, 
-        # yfinance 표준인 .KS를 기본으로 붙여 조회 시도
+        # 안전망: AI가 .KS를 빼먹고 숫자만 반환했을 경우 자동 보정
         if ticker_symbol.isdigit() and len(ticker_symbol) == 6:
             ticker_symbol += ".KS"
             
@@ -193,21 +186,21 @@ def fetch_realtime_data(ticker_symbol):
             change_str = "데이터 없음"
             
         if market_cap:
-            if market_cap > 1_000_000_000_000: # 1조 이상
+            if market_cap > 1_000_000_000_000:
                 cap_str = f"{market_cap / 1_000_000_000_000:,.1f}조"
-            elif market_cap > 100_000_000: # 1억 이상
+            elif market_cap > 100_000_000:
                 cap_str = f"{market_cap / 100_000_000:,.0f}억"
             else:
                 cap_str = f"{market_cap:,}"
         else:
             cap_str = "데이터 없음"
             
-        return price_str, change_str, cap_str
+        return price_str, change_str, cap_str, ticker_symbol
     except Exception as e:
-        return "조회 실패", "조회 실패", "조회 실패"
+        return "조회 실패", "조회 실패", "조회 실패", ticker_symbol
 
 # ==========================================
-# 4. Alpha-Logic 엔진 (프롬프트 주입 방식)
+# 5. Alpha-Logic 엔진 (프롬프트 주입 방식)
 # ==========================================
 def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     if not api_key:
@@ -257,26 +250,26 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     return None
 
 # ==========================================
-# 5. 메인 화면 구성
+# 6. 메인 화면 구성
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["📋 종합 리포트", "💎 펀더멘털 분석", "⚡ 급등락 원인", "📡 종목 레이더"])
 
 # --- 탭 1 ---
 with tab1:
     st.subheader("📋 실시간 융합 리포트 분석")
-    col_t1, col_t2 = st.columns(2)
-    with col_t1:
-        company_1 = st.text_input("기업명 입력 (예: 삼성전자):", key="c1_name")
-    with col_t2:
-        ticker_1 = st.text_input("종목코드 입력 (예: 005930 또는 AAPL):", key="c1_ticker")
+    # 종목코드 입력란 삭제! 이름만 하나만 편하게 입력받습니다.
+    company_1 = st.text_input("기업명 입력 (예: 삼성전자, 애플, 테슬라):", key="c1_name")
     
-    if st.button("분석 실행", key="b1") and company_1 and ticker_1:
-        with st.spinner("Python API로 주가 수집 및 AI 정밀 분석 중..."):
+    if st.button("분석 실행", key="b1") and company_1:
+        with st.spinner(f"[{company_1}]의 정확한 종목코드를 AI가 탐색 중입니다..."):
+            # 1단계: AI가 기업명을 Ticker로 자동 변환
+            smart_ticker = get_auto_ticker(company_1)
             
-            # 1단계: 실시간 데이터 스크래핑
-            live_price, live_change, live_cap = fetch_realtime_data(ticker_1)
+        with st.spinner(f"주가 수집 및 정밀 분석 중... (인식된 코드: {smart_ticker})"):
+            # 2단계: 자동 변환된 Ticker로 실시간 데이터 스크래핑
+            live_price, live_change, live_cap, final_ticker = fetch_realtime_data(smart_ticker)
             
-            # 2단계: AI에게 실시간 데이터를 강제 주입하는 프롬프트 생성
+            # 3단계: AI에게 실시간 데이터를 강제 주입하는 프롬프트 생성
             sys_p = f"""너는 Alpha-Logic이다. 
             [시스템이 수집한 실시간 절대 팩트]
             - 현재가: {live_price}
@@ -289,7 +282,7 @@ with tab1:
             if res:
                 save_to_firestore(company_1, "종합리포트", res)
                 
-                with st.expander("🤖 엔진의 논리 검증 과정 (Chain of Thought)"):
+                with st.expander(f"🤖 자동 인식된 종목코드: {final_ticker}"):
                     st.write(res.get('reasoning_process', '기록 없음'))
 
                 # 엔진이 반환한 데이터 표출
