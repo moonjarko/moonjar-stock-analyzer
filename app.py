@@ -5,7 +5,6 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 import json
 import requests
-import re
 from datetime import datetime
 
 # ==========================================
@@ -122,7 +121,7 @@ with st.sidebar:
 
 def save_to_firestore(ticker, tab_name, data):
     if not PROJECT_ID: return
-    url = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents/analysis_logs"
+    url = f"[https://firestore.googleapis.com/v1/projects/](https://firestore.googleapis.com/v1/projects/){PROJECT_ID}/databases/(default)/documents/analysis_logs"
     payload = {
         "fields": {
             "ticker": {"stringValue": ticker},
@@ -138,7 +137,7 @@ def save_to_firestore(ticker, tab_name, data):
 
 def load_history_from_firestore():
     if not PROJECT_ID: return []
-    url = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents/analysis_logs"
+    url = f"[https://firestore.googleapis.com/v1/projects/](https://firestore.googleapis.com/v1/projects/){PROJECT_ID}/databases/(default)/documents/analysis_logs"
     try:
         res = requests.get(url)
         if res.status_code == 200:
@@ -166,7 +165,7 @@ if history_data:
                 st.success(f"{item['ticker']} 데이터를 불러왔습니다. 본문 탭을 확인하세요.")
 
 # ==========================================
-# 3. Alpha-Logic 핵심 엔진 (검색 기능 완전 배제)
+# 3. Alpha-Logic 핵심 엔진 (검색 배제 및 안전한 JSON 클렌징)
 # ==========================================
 def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     if not api_key:
@@ -178,26 +177,140 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
         anti_hallucination_rules = """
         [초강력 통제 규칙: 환각(Hallucination) 방지 지침]
         1. '모름'의 강제화: 사전 학습된 지식 내에서 명확히 확인되지 않는 수치, 날짜, 사실은 절대 유추하거나 지어내지 마라. 반드시 '데이터 없음' 또는 '확인 불가'로 기재하라.
-        2. 마크다운 완전 금지: 시작과 끝에 ```json 이나 
-``` 같은 기호를 절대 붙이지 말고 오직 순수한 JSON 중괄호 {} 만 출력하라.
+        2. 마크다운 완전 금지: 시작과 끝에 ```json 이나 ``` 같은 기호를 절대 붙이지 말고 오직 순수한 JSON 중괄호 {} 만 출력하라.
         """
         
         schema_json_string = json.dumps(schema_class.model_json_schema(), ensure_ascii=False)
         enhanced_system_prompt = f"{system_prompt}\n\n{anti_hallucination_rules}\n\n[중요] 출력은 반드시 다음 JSON 스키마 구조를 완벽하게 따르는 순수 JSON 객체여야 한다:\n{schema_json_string}"
         
         response = client.models.generate_content(
-            model='gemini-1.5-flash',  # 무료 할당량이 보장된 1.5 Flash
+            model='gemini-1.5-flash',
             contents=query,
             config=types.GenerateContentConfig(
                 system_instruction=enhanced_system_prompt,
-                # tools 파라미터가 원천 제거되었습니다. (404/429 에러 방지)
                 temperature=0.0, 
             )
         )
         
-        # JSON 클렌징 (마크다운 기호 제거)
+        # 팩트: SyntaxError를 유발하는 re(정규식) 모듈을 제거하고, 안전한 replace 방식으로 교체
         raw_text = response.text.strip()
-        raw_text = re.sub(r"^```json\s*", "", raw_text)
-        raw_text = re.sub(r"^
-```\s*", "", raw_text)
-        raw_text = re.sub(r"\s*
+        raw_text = raw_text.replace("```json", "")
+        raw_text = raw_text.replace("```", "")
+        raw_text = raw_text.strip()
+        
+        return json.loads(raw_text)
+        
+    except json.JSONDecodeError as je:
+        st.error("데이터 구조화 과정에서 충돌이 발생했습니다. 다시 시도해 주세요.")
+        return None
+    except Exception as e:
+        st.error(f"엔진 오류 발생: {e}")
+        return None
+
+# ==========================================
+# 4. 메인 화면 구성 (4개 탭)
+# ==========================================
+tab1, tab2, tab3, tab4 = st.tabs(["📋 종합 리포트", "💎 펀더멘털 분석", "⚡ 급등락 원인", "📡 종목 레이더"])
+
+# --- 탭 1 ---
+with tab1:
+    st.subheader("📋 4대 소스 종합 리포트 분석")
+    company_1 = st.text_input("분석할 기업명 입력 (예: 삼성전자):", key="c1")
+    
+    if st.button("분석 실행", key="b1") and company_1:
+        with st.spinner("AI 엔진 지식 기반 정밀 분석 중..."):
+            sys_p = "너는 Alpha-Logic이다. 해당 기업에 대해 알고 있는 가장 객관적인 정보와 팩트를 조사하라."
+            res = ask_alpha_logic(f"{company_1} 종합 분석", sys_p, ReportData)
+            if res:
+                save_to_firestore(company_1, "종합리포트", res)
+                
+                with st.expander("🤖 엔진의 논리 검증 과정 (Chain of Thought)"):
+                    st.write(res.get('reasoning_process', '기록 없음'))
+
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("현재가/최근가", res.get('current_price', 'N/A'))
+                col2.metric("변동", res.get('price_change_percent', 'N/A'))
+                col3.metric("시가총액", res.get('market_cap', 'N/A'))
+                col4.metric("업종", res.get('industry_type', 'N/A'))
+                
+                st.markdown(f"### 🎯 투자의견: **{res.get('consensus_opinion', 'N/A')}** (목표가: {res.get('target_price', 'N/A')})")
+                st.info(f"**밸류에이션 요약**: {res.get('valuation_summary', '')}")
+                
+                c_a, c_b = st.columns(2)
+                with c_a:
+                    st.markdown("### 📰 검증된 주요 이슈")
+                    for issue in res.get('recent_issues', []):
+                        st.write(f"- **[{issue.get('date', '')}]** {issue.get('content', '')} *(출처: {issue.get('source', '')})*")
+                with c_b:
+                    st.markdown("### 🟢🟡🔴 팩트 시트")
+                    for fact in res.get('fact_sheets', []):
+                        st.write(f"- **{fact.get('tone', '')}** | {fact.get('point', '')} *(출처: {fact.get('source', '')})*")
+
+# --- 탭 2 ---
+with tab2:
+    st.subheader("💎 본질가치 및 해자 분석")
+    company_2 = st.text_input("기업명 입력:", key="c2")
+    if st.button("펀더멘털 분석", key="b2") and company_2:
+        with st.spinner("지식 기반 지표 수집 및 논리 구조화 중..."):
+            sys_p = "너는 Alpha-Logic이다. 사전 학습된 팩트를 기반으로 업종에 맞는 멀티플을 적용하여 해자와 리스크를 분석하라."
+            res = ask_alpha_logic(f"{company_2} 펀더멘털 정밀 분석", sys_p, FundamentalData)
+            if res:
+                save_to_firestore(company_2, "펀더멘털", res)
+                
+                with st.expander("🤖 엔진의 논리 검증 과정 (Chain of Thought)"):
+                    st.write(res.get('reasoning_process', '기록 없음'))
+
+                st.markdown(f"### 📊 종합 점수: **{res.get('valuation_score', 0)}점** ({res.get('valuation_grade', 'N/A')})")
+                st.caption(f"산출 근거: {res.get('valuation_basis', '')}")
+                st.table(res.get('details', []))
+                
+                col_m1, col_m2 = st.columns(2)
+                with col_m1:
+                    st.markdown("#### 💪 강점 (해자)")
+                    for pair in res.get('moat_pairs', []):
+                        st.success(pair.get('strength', ''))
+                with col_m2:
+                    st.markdown("#### 🐻 리스크 (반론)")
+                    for pair in res.get('moat_pairs', []):
+                        st.error(pair.get('bear_case', ''))
+
+# --- 탭 3 ---
+with tab3:
+    st.subheader("⚡ 급등락 원인 추적")
+    company_3 = st.text_input("종목명 입력:", key="c3")
+    period = st.selectbox("기간 선택", ["최근 1주", "최근 1개월", "최근 1년"])
+    if st.button("원인 추적", key="b3") and company_3:
+        with st.spinner("시장 데이터 교차 검증 중..."):
+            sys_p = f"너는 Alpha-Logic이다. 사전 학습된 지식을 활용해 {period} 동안의 주요 주가 변동 원인을 찾아 분류하라."
+            res = ask_alpha_logic(f"{company_3} {period} 주가 변동 원인", sys_p, VolatilityData)
+            if res:
+                save_to_firestore(f"{company_3}({period})", "급등락", res)
+                
+                with st.expander("🤖 엔진의 논리 검증 과정 (Chain of Thought)"):
+                    st.write(res.get('reasoning_process', '기록 없음'))
+
+                st.subheader(f"변동 요약: {res.get('change_percent', 'N/A')}")
+                for card in res.get('reason_cards', []):
+                    with st.expander(f"🔥 [{card.get('impact_level', 0)}/5] {card.get('title', '')} ({card.get('category', '')})", expanded=True):
+                        st.write(card.get('description', ''))
+                        st.caption(f"출처: {card.get('source', '')}")
+
+# --- 탭 4 ---
+with tab4:
+    st.subheader("📡 종목 레이더 (조건부 스크리닝)")
+    condition = st.text_input("조건 입력 (예: 배당 성장주, 턴어라운드 기대주):", value="저PBR 리레이팅")
+    if st.button("레이더 가동", key="b4") and condition:
+        with st.spinner("지식 기반 스크리닝 진행 중..."):
+            sys_p = "너는 Alpha-Logic이다. 사전 학습된 지식을 바탕으로 제시된 조건에 정확히 부합하는 종목을 탐색하고 반드시 그 근거를 명시하라."
+            res = ask_alpha_logic(f"조건 [{condition}] 종목 수집", sys_p, RadarData)
+            if res:
+                save_to_firestore(condition, "레이더", res)
+                
+                with st.expander("🤖 엔진의 논리 검증 과정 (Chain of Thought)"):
+                    st.write(res.get('reasoning_process', '기록 없음'))
+
+                for cand in res.get('candidates', []):
+                    with st.container(border=True):
+                        st.markdown(f"### {cand.get('name', '')} ({cand.get('ticker', '')})")
+                        st.write(f"**근거**: {cand.get('reason', '')}")
+                        st.caption(f"출처: {cand.get('source', '')}")
