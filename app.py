@@ -25,7 +25,6 @@ class FactSheetItem(BaseModel):
     point: str = Field(description="핵심 요약 포인트")
     source: str
 
-# 탭 1 스키마
 class ReportData(BaseModel):
     current_price: str
     price_change_percent: str
@@ -42,7 +41,6 @@ class ReportData(BaseModel):
     catalysts: List[str]
     risks: List[str]
 
-# 탭 2 스키마
 class ValuationDetail(BaseModel):
     indicator: str
     peer_compare: str
@@ -76,7 +74,6 @@ class FundamentalData(BaseModel):
     attractive_zone: str
     kpi_points: List[str]
 
-# 탭 3 스키마
 class VolatilityCard(BaseModel):
     title: str
     category: str = Field(description="실적, 공시, 업종, 시장, 기타 중 하나")
@@ -88,7 +85,6 @@ class VolatilityData(BaseModel):
     change_percent: str
     reason_cards: List[VolatilityCard]
 
-# 탭 4 스키마
 class RadarCard(BaseModel):
     name: str
     ticker: str
@@ -105,16 +101,20 @@ class RadarData(BaseModel):
 # 2. UI 및 Firebase 설정
 # ==========================================
 st.set_page_config(page_title="Alpha-Logic 분석기", layout="wide")
-st.title("📈 Alpha-Logic 주식 분석기 (v2.0 Gemini+Firestore)")
+st.title("📈 Alpha-Logic 주식 분석기 (v2.0 Gemini Pro)")
 
+# Streamlit 비밀 금고(Secrets)에서 안전하게 키를 불러옵니다.
 with st.sidebar:
     st.header("⚙️ 시스템 상태")
-    # Streamlit 클라우드 비밀 금고에서 키를 자동으로 꺼내옵니다.
-    api_key = st.secrets["GEMINI_API_KEY"]
-    PROJECT_ID = st.secrets.get("FIREBASE_PROJECT_ID", "")
-    
-    st.success("✅ Alpha-Logic 엔진 가동 중")
-    st.caption("가족 공용 모드로 안전하게 연결되었습니다.")
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+        PROJECT_ID = st.secrets.get("FIREBASE_PROJECT_ID", "")
+        st.success("✅ Alpha-Logic 엔진(1.5 Pro) 가동 중")
+        st.caption("가족 공용 모드로 안전하게 연결되었습니다.")
+    except Exception as e:
+        api_key = ""
+        PROJECT_ID = ""
+        st.error("⚠️ 클라우드 비밀 금고(Secrets) 설정이 필요합니다.")
     st.markdown("---")
 
 # --- Firebase 데이터베이스 REST API ---
@@ -161,31 +161,36 @@ if history_data:
                 st.session_state[f"cached_{item['tab']}_{item['ticker']}"] = item['json_data']
                 st.success(f"{item['ticker']} 데이터를 불러왔습니다. 본문 탭을 확인하세요.")
 
-# 공통 프롬프트 호출 함수
+# ==========================================
+# 3. Alpha-Logic 핵심 엔진 (1.5 Pro 최적화)
+# ==========================================
 def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     if not api_key:
-        st.warning("왼쪽 사이드바에 API Key를 먼저 입력해 주세요.")
         return None
     try:
         client = genai.Client(api_key=api_key)
+        
+        # 1.5 Pro 모델의 제약을 우회하기 위한 프롬프트 엔지니어링 주입
+        schema_json_string = json.dumps(schema_class.model_json_schema(), ensure_ascii=False)
+        enhanced_system_prompt = f"{system_prompt}\n\n[중요] 출력은 반드시 다음 JSON 스키마 구조를 완벽하게 따르는 순수 JSON 객체여야 한다. 마크다운 기호 없이 JSON만 출력하라:\n{schema_json_string}"
+        
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-1.5-pro',
             contents=query,
             config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
+                system_instruction=enhanced_system_prompt,
                 tools=[{"google_search": {}}], 
                 response_mime_type="application/json",
-                response_schema=schema_class,
                 temperature=0.15,
             )
         )
         return json.loads(response.text)
     except Exception as e:
-        st.error(f"오류 발생: {e}")
+        st.error(f"Alpha-Logic 엔진 오류 발생: {e}")
         return None
 
 # ==========================================
-# 3. 메인 화면 구성 (4개 탭)
+# 4. 메인 화면 구성 (4개 탭)
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["📋 종합 리포트", "💎 펀더멘털 분석", "⚡ 급등락 원인", "📡 종목 레이더"])
 
@@ -195,55 +200,83 @@ with tab1:
     company_1 = st.text_input("분석할 기업명 입력 (예: 삼성전자):", key="c1")
     
     if st.button("분석 실행", key="b1") and company_1:
-        with st.spinner("데이터 수집 중..."):
-            sys_p = "너는 Alpha-Logic이다. 최근 1개월 이내의 뉴스, 공시, 리포트를 전수조사하라."
+        with st.spinner("데이터 수집 및 정밀 분석 중... (약 15~30초 소요)"):
+            sys_p = "너는 Alpha-Logic이다. 최근 1개월 이내의 뉴스, 공시, 리포트를 전수조사하여 객관적으로 요약하라. 출처와 날짜를 반드시 명시하라."
             res = ask_alpha_logic(f"{company_1} 종합 분석", sys_p, ReportData)
             if res:
                 save_to_firestore(company_1, "종합리포트", res)
                 col1, col2, col3, col4 = st.columns(4)
-                col1.metric("현재가", res['current_price'])
-                col2.metric("전일대비", res['price_change_percent'])
-                col3.metric("시가총액", res['market_cap'])
-                col4.metric("업종/시각", f"{res['industry_type']} / {res['timestamp']}")
-                st.write(f"**목표가**: {res['target_price']}")
+                col1.metric("현재가", res.get('current_price', 'N/A'))
+                col2.metric("전일대비", res.get('price_change_percent', 'N/A'))
+                col3.metric("시가총액", res.get('market_cap', 'N/A'))
+                col4.metric("업종/시각", f"{res.get('industry_type', 'N/A')} / {res.get('timestamp', 'N/A')}")
                 
+                st.markdown(f"### 🎯 투자의견: **{res.get('consensus_opinion', 'N/A')}** (목표가: {res.get('target_price', 'N/A')})")
+                st.info(f"**밸류에이션 요약**: {res.get('valuation_summary', '')}")
+                
+                c_a, c_b = st.columns(2)
+                with c_a:
+                    st.markdown("### 📰 최근 주요 이슈")
+                    for issue in res.get('recent_issues', []):
+                        st.write(f"- **[{issue.get('date', '')}]** {issue.get('content', '')} *(출처: {issue.get('source', '')})*")
+                with c_b:
+                    st.markdown("### 🟢🟡🔴 팩트 시트")
+                    for fact in res.get('fact_sheets', []):
+                        st.write(f"- **{fact.get('tone', '')}** | {fact.get('point', '')} *(출처: {fact.get('source', '')})*")
+
 # --- 탭 2 ---
 with tab2:
     st.subheader("💎 본질가치 및 해자 분석")
     company_2 = st.text_input("기업명 입력:", key="c2")
     if st.button("펀더멘털 분석", key="b2") and company_2:
-        with st.spinner("밸류에이션 분석 중..."):
-            sys_p = "너는 Alpha-Logic이다. 밸류에이션과 해자(강점/리스크 쌍)를 분석하라."
-            res = ask_alpha_logic(f"{company_2} 펀더멘털 분석", sys_p, FundamentalData)
+        with st.spinner("밸류에이션 및 경제적 해자 심층 분석 중..."):
+            sys_p = "너는 Alpha-Logic이다. 업종에 맞는 멀티플을 적용하고 경제적 해자와 그에 대한 비판적 리스크(Bear case)를 1:1로 짝지어 분석하라."
+            res = ask_alpha_logic(f"{company_2} 펀더멘털 정밀 분석", sys_p, FundamentalData)
             if res:
                 save_to_firestore(company_2, "펀더멘털", res)
-                st.markdown(f"### 📊 밸류에이션 점수: **{res['valuation_score']}점**")
-                st.table(res['details'])
+                st.markdown(f"### 📊 종합 점수: **{res.get('valuation_score', 0)}점** ({res.get('valuation_grade', 'N/A')})")
+                st.caption(f"산출 근거: {res.get('valuation_basis', '')}")
+                st.table(res.get('details', []))
+                
+                col_m1, col_m2 = st.columns(2)
+                with col_m1:
+                    st.markdown("#### 💪 강점 (해자)")
+                    for pair in res.get('moat_pairs', []):
+                        st.success(pair.get('strength', ''))
+                with col_m2:
+                    st.markdown("#### 🐻 리스크 (반론)")
+                    for pair in res.get('moat_pairs', []):
+                        st.error(pair.get('bear_case', ''))
 
 # --- 탭 3 ---
 with tab3:
     st.subheader("⚡ 급등락 원인 추적")
     company_3 = st.text_input("종목명 입력:", key="c3")
-    period = st.selectbox("기간", ["오늘", "1주", "1개월"])
+    period = st.selectbox("기간 선택", ["오늘", "1주", "1개월"])
     if st.button("원인 추적", key="b3") and company_3:
-        with st.spinner("원인 역추적 중..."):
-            sys_p = "너는 Alpha-Logic이다. 해당 기간의 주가 변동 원인을 찾아라."
-            res = ask_alpha_logic(f"{company_3} {period} 원인", sys_p, VolatilityData)
+        with st.spinner("실시간 뉴스 및 공시를 역추적 중..."):
+            sys_p = "너는 Alpha-Logic이다. 주가 변동의 핵심 원인을 찾아 카테고리별로 분류하고 영향력을 평가하라."
+            res = ask_alpha_logic(f"{company_3} {period} 주가 변동 원인", sys_p, VolatilityData)
             if res:
                 save_to_firestore(f"{company_3}({period})", "급등락", res)
-                st.subheader(f"변동률: {res['change_percent']}")
-                for card in res['reason_cards']:
-                    st.write(f"- {card['title']} (영향력: {card['impact_level']})")
+                st.subheader(f"해당 기간 변동률: {res.get('change_percent', 'N/A')}")
+                for card in res.get('reason_cards', []):
+                    with st.expander(f"🔥 [{card.get('impact_level', 0)}/5] {card.get('title', '')} ({card.get('category', '')})", expanded=True):
+                        st.write(card.get('description', ''))
+                        st.caption(f"출처: {card.get('source', '')}")
 
 # --- 탭 4 ---
 with tab4:
     st.subheader("📡 종목 레이더")
-    condition = st.text_input("조건 입력:", value="저PBR 리레이팅")
+    condition = st.text_input("조건 입력 (예: 배당 성장주, 턴어라운드 기대주):", value="저PBR 리레이팅")
     if st.button("레이더 가동", key="b4") and condition:
-        with st.spinner("종목 스크리닝 중..."):
-            sys_p = "너는 Alpha-Logic이다. 조건에 부합하는 종목 5개를 수집하라."
+        with st.spinner("시장 컨센서스 스크리닝 중..."):
+            sys_p = "너는 Alpha-Logic이다. 제시된 조건에 가장 잘 부합하는 핵심 종목들을 시장 컨센서스 기반으로 5개 수집하라."
             res = ask_alpha_logic(f"조건 [{condition}] 종목 수집", sys_p, RadarData)
             if res:
                 save_to_firestore(condition, "레이더", res)
-                for cand in res['candidates']:
-                    st.write(f"**{cand['name']}**: {cand['key_point']}")
+                for cand in res.get('candidates', []):
+                    with st.container(border=True):
+                        st.markdown(f"### {cand.get('name', '')} ({cand.get('ticker', '')})")
+                        st.write(f"**근거**: {cand.get('reason', '')}")
+                        st.caption(f"출처: {cand.get('source', '')}")
