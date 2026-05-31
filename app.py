@@ -8,7 +8,7 @@ import requests
 from datetime import datetime
 
 # ==========================================
-# 1. Pydantic 구조 (Gemini JSON 파싱 및 CoT 강제용)
+# 1. Pydantic 구조 (Gemini JSON 파싱 및 강제용)
 # ==========================================
 class SourceItem(BaseModel):
     title: str = Field(description="출처 매체명 또는 리포트명")
@@ -121,7 +121,7 @@ with st.sidebar:
 
 def save_to_firestore(ticker, tab_name, data):
     if not PROJECT_ID: return
-    url = f"[https://firestore.googleapis.com/v1/projects/](https://firestore.googleapis.com/v1/projects/){PROJECT_ID}/databases/(default)/documents/analysis_logs"
+    url = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents/analysis_logs"
     payload = {
         "fields": {
             "ticker": {"stringValue": ticker},
@@ -137,7 +137,7 @@ def save_to_firestore(ticker, tab_name, data):
 
 def load_history_from_firestore():
     if not PROJECT_ID: return []
-    url = f"[https://firestore.googleapis.com/v1/projects/](https://firestore.googleapis.com/v1/projects/){PROJECT_ID}/databases/(default)/documents/analysis_logs"
+    url = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents/analysis_logs"
     try:
         res = requests.get(url)
         if res.status_code == 200:
@@ -165,7 +165,7 @@ if history_data:
                 st.success(f"{item['ticker']} 데이터를 불러왔습니다. 본문 탭을 확인하세요.")
 
 # ==========================================
-# 3. Alpha-Logic 핵심 엔진 (검색 배제 및 안전한 JSON 클렌징)
+# 3. Alpha-Logic 핵심 엔진 (안전한 JSON 클렌징 적용)
 # ==========================================
 def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     if not api_key:
@@ -192,7 +192,7 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
             )
         )
         
-        # 팩트: SyntaxError를 유발하는 re(정규식) 모듈을 제거하고, 안전한 replace 방식으로 교체
+        # 팩트: SyntaxError를 유발했던 복잡한 정규식(re)을 버리고, 직관적인 replace 방식으로 교체했습니다.
         raw_text = response.text.strip()
         raw_text = raw_text.replace("```json", "")
         raw_text = raw_text.replace("```", "")
@@ -204,6 +204,27 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
         st.error("데이터 구조화 과정에서 충돌이 발생했습니다. 다시 시도해 주세요.")
         return None
     except Exception as e:
+        # 모델 이름 오류(404) 발생 시, 가장 보편적인 최신 flash 모델로 자동 재시도하는 예외 처리 추가
+        if "404" in str(e):
+            st.warning("기본 모델명(1.5-flash) 연결 지연. 대체 모델(1.5-flash-8b)로 재시도합니다...")
+            try:
+                response = client.models.generate_content(
+                    model='gemini-1.5-flash-8b', 
+                    contents=query,
+                    config=types.GenerateContentConfig(
+                        system_instruction=enhanced_system_prompt,
+                        temperature=0.0, 
+                    )
+                )
+                raw_text = response.text.strip()
+                raw_text = raw_text.replace("```json", "")
+                raw_text = raw_text.replace("```", "")
+                raw_text = raw_text.strip()
+                return json.loads(raw_text)
+            except Exception as retry_e:
+                st.error(f"대체 엔진 오류 발생: {retry_e}")
+                return None
+        
         st.error(f"엔진 오류 발생: {e}")
         return None
 
