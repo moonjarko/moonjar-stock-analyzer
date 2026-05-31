@@ -5,10 +5,12 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 import json
 import requests
+import re
 from datetime import datetime
+import yfinance as yf
 
 # ==========================================
-# 1. Pydantic 구조 (복사 줄바꿈 에러 방지용 단문 적용)
+# 1. Pydantic 구조 (단문 적용으로 SyntaxError 원천 차단)
 # ==========================================
 class SourceItem(BaseModel):
     title: str = Field(description="출처 매체명")
@@ -27,9 +29,9 @@ class FactSheetItem(BaseModel):
 
 class ReportData(BaseModel):
     reasoning_process: str = Field(description="팩트 체크 및 추론 과정")
-    current_price: str = Field(description="없을경우 데이터 없음 표기")
-    price_change_percent: str = Field(description="없을경우 데이터 없음 표기")
-    market_cap: str = Field(description="없을경우 데이터 없음 표기")
+    current_price: str = Field(description="프롬프트로 주입된 데이터 사용")
+    price_change_percent: str = Field(description="프롬프트로 주입된 데이터 사용")
+    market_cap: str = Field(description="프롬프트로 주입된 데이터 사용")
     industry_type: str
     timestamp: str
     recent_issues: List[IssueItem]
@@ -105,14 +107,14 @@ class RadarData(BaseModel):
 # 2. UI 및 Firebase 통신 설정
 # ==========================================
 st.set_page_config(page_title="Alpha-Logic 분석기", layout="wide")
-st.title("📈 Alpha-Logic 주식 분석기 (2.5 Flash 엔진 / 오프라인 모드)")
+st.title("📈 Alpha-Logic 주식 분석기 (하이브리드 실시간 연동)")
 
 with st.sidebar:
     st.header("⚙️ 시스템 상태")
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         PROJECT_ID = st.secrets.get("FIREBASE_PROJECT_ID", "")
-        st.success("✅ 2.5 Flash 엔진 (에러 우회 완료) 가동 대기 중")
+        st.success("✅ 2.5 Flash + yfinance 파이프라인 가동 중")
     except Exception as e:
         api_key = ""
         PROJECT_ID = ""
@@ -165,7 +167,47 @@ if history_data:
                 st.success(f"{item['ticker']} 데이터를 불러왔습니다. 본문 탭을 확인하세요.")
 
 # ==========================================
-# 3. Alpha-Logic 다중 엔진 시스템 (API 실제 리스트 기반 적용)
+# 3. 실시간 주가 수집 (yfinance API)
+# ==========================================
+def fetch_realtime_data(ticker_symbol):
+    try:
+        # 한국 주식(6자리 숫자)인 경우 자동으로 .KS(코스피) 또는 .KQ(코스닥) 처리가 필요하나, 
+        # yfinance 표준인 .KS를 기본으로 붙여 조회 시도
+        if ticker_symbol.isdigit() and len(ticker_symbol) == 6:
+            ticker_symbol += ".KS"
+            
+        stock = yf.Ticker(ticker_symbol)
+        info = stock.info
+        
+        current_price = info.get('currentPrice', info.get('regularMarketPrice', None))
+        prev_close = info.get('previousClose', None)
+        market_cap = info.get('marketCap', None)
+        
+        # 포맷팅 연산
+        price_str = f"{current_price:,.0f}" if current_price else "데이터 없음"
+        
+        if current_price and prev_close:
+            change_pct = ((current_price - prev_close) / prev_close) * 100
+            change_str = f"{change_pct:+.2f}%"
+        else:
+            change_str = "데이터 없음"
+            
+        if market_cap:
+            if market_cap > 1_000_000_000_000: # 1조 이상
+                cap_str = f"{market_cap / 1_000_000_000_000:,.1f}조"
+            elif market_cap > 100_000_000: # 1억 이상
+                cap_str = f"{market_cap / 100_000_000:,.0f}억"
+            else:
+                cap_str = f"{market_cap:,}"
+        else:
+            cap_str = "데이터 없음"
+            
+        return price_str, change_str, cap_str
+    except Exception as e:
+        return "조회 실패", "조회 실패", "조회 실패"
+
+# ==========================================
+# 4. Alpha-Logic 엔진 (프롬프트 주입 방식)
 # ==========================================
 def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     if not api_key:
@@ -175,22 +217,15 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     client = genai.Client(api_key=api_key)
     
     anti_hallucination_rules = """
-    [초강력 통제 규칙: 환각(Hallucination) 방지 지침]
-    1. '모름'의 강제화: 명확히 확인되지 않는 데이터는 절대 지어내지 말고 '데이터 없음'으로 기재하라.
+    [초강력 통제 규칙: 환각 방지 지침]
+    1. 프롬프트로 주입된 [실시간 데이터]는 절대 변형하지 말고 JSON에 그대로 기입하라.
     2. 마크다운 완전 금지: 시작과 끝에 ```json 이나 ``` 기호를 절대 붙이지 말고 오직 순수 JSON 중괄호 {} 만 출력하라.
     """
     
     schema_json_string = json.dumps(schema_class.model_json_schema(), ensure_ascii=False)
     enhanced_system_prompt = f"{system_prompt}\n\n{anti_hallucination_rules}\n\n[중요] 출력은 반드시 다음 JSON 스키마를 완벽히 따르는 순수 JSON 객체여야 한다:\n{schema_json_string}"
     
-    # 팩트: 고객님의 API 스캐너 출력 결과에 100% 매핑된 최신 모델 후보군
-    model_candidates = [
-        'gemini-2.5-flash',
-        'gemini-3.5-flash',
-        'gemini-2.0-flash',
-        'gemini-3.1-flash-lite'
-    ]
-    
+    model_candidates = ['gemini-2.5-flash', 'gemini-3.5-flash', 'gemini-2.0-flash']
     last_error = None
     
     for model_name in model_candidates:
@@ -204,7 +239,6 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
                 )
             )
             
-            # 구문 분석 에러(SyntaxError) 방지 클렌징
             raw_text = response.text.strip()
             raw_text = raw_text.replace("```json", "")
             raw_text = raw_text.replace("```", "")
@@ -223,18 +257,34 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     return None
 
 # ==========================================
-# 4. 메인 화면 구성 (4개 탭)
+# 5. 메인 화면 구성
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["📋 종합 리포트", "💎 펀더멘털 분석", "⚡ 급등락 원인", "📡 종목 레이더"])
 
 # --- 탭 1 ---
 with tab1:
-    st.subheader("📋 종합 리포트 분석 (2.5 Flash)")
-    company_1 = st.text_input("분석할 기업명 입력 (예: 삼성전자):", key="c1")
+    st.subheader("📋 실시간 융합 리포트 분석")
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        company_1 = st.text_input("기업명 입력 (예: 삼성전자):", key="c1_name")
+    with col_t2:
+        ticker_1 = st.text_input("종목코드 입력 (예: 005930 또는 AAPL):", key="c1_ticker")
     
-    if st.button("분석 실행", key="b1") and company_1:
-        with st.spinner("AI 엔진 연결 및 정밀 분석 중..."):
-            sys_p = "너는 Alpha-Logic이다. 해당 기업에 대해 알고 있는 가장 객관적인 정보와 팩트를 조사하라."
+    if st.button("분석 실행", key="b1") and company_1 and ticker_1:
+        with st.spinner("Python API로 주가 수집 및 AI 정밀 분석 중..."):
+            
+            # 1단계: 실시간 데이터 스크래핑
+            live_price, live_change, live_cap = fetch_realtime_data(ticker_1)
+            
+            # 2단계: AI에게 실시간 데이터를 강제 주입하는 프롬프트 생성
+            sys_p = f"""너는 Alpha-Logic이다. 
+            [시스템이 수집한 실시간 절대 팩트]
+            - 현재가: {live_price}
+            - 변동률: {live_change}
+            - 시가총액: {live_cap}
+            
+            위 실시간 데이터를 JSON의 current_price, price_change_percent, market_cap 항목에 반드시 그대로 입력하라. 나머지 정성적 분석(투자의견, 업종, 이슈)은 너의 사전 지식을 활용하라."""
+            
             res = ask_alpha_logic(f"{company_1} 종합 분석", sys_p, ReportData)
             if res:
                 save_to_firestore(company_1, "종합리포트", res)
@@ -242,10 +292,11 @@ with tab1:
                 with st.expander("🤖 엔진의 논리 검증 과정 (Chain of Thought)"):
                     st.write(res.get('reasoning_process', '기록 없음'))
 
+                # 엔진이 반환한 데이터 표출
                 col1, col2, col3, col4 = st.columns(4)
-                col1.metric("현재가/최근가", res.get('current_price', 'N/A'))
-                col2.metric("변동", res.get('price_change_percent', 'N/A'))
-                col3.metric("시가총액", res.get('market_cap', 'N/A'))
+                col1.metric("현재가/최근가", res.get('current_price', live_price))
+                col2.metric("변동", res.get('price_change_percent', live_change))
+                col3.metric("시가총액", res.get('market_cap', live_cap))
                 col4.metric("업종", res.get('industry_type', 'N/A'))
                 
                 st.markdown(f"### 🎯 투자의견: **{res.get('consensus_opinion', 'N/A')}** (목표가: {res.get('target_price', 'N/A')})")
