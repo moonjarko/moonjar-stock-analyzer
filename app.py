@@ -26,7 +26,7 @@ class FactSheetItem(BaseModel):
     source: str = Field(description="반드시 특정 매체명과 발행일 기재")
 
 class ReportData(BaseModel):
-    reasoning_process: str = Field(description="본 데이터를 도출하기 위해 수행한 검색 결과 기반의 논리적 팩트 체크 과정 (가장 먼저 작성할 것)")
+    reasoning_process: str = Field(description="본 데이터를 도출하기 위해 수행한 논리적 팩트 체크 과정 (가장 먼저 작성할 것)")
     current_price: str = Field(description="확인 불가 시 '데이터 없음'으로 표기")
     price_change_percent: str = Field(description="확인 불가 시 '데이터 없음'으로 표기")
     market_cap: str = Field(description="확인 불가 시 '데이터 없음'으로 표기")
@@ -61,7 +61,7 @@ class ReratingScenario(BaseModel):
     probability: str
 
 class FundamentalData(BaseModel):
-    reasoning_process: str = Field(description="본 데이터를 도출하기 위해 수행한 검색 결과 기반의 논리적 팩트 체크 과정 (가장 먼저 작성할 것)")
+    reasoning_process: str = Field(description="본 데이터를 도출하기 위해 수행한 논리적 팩트 체크 과정 (가장 먼저 작성할 것)")
     selected_multiple_type: str
     valuation_score: int
     valuation_grade: str
@@ -105,14 +105,14 @@ class RadarData(BaseModel):
 # 2. UI 및 Firebase 설정
 # ==========================================
 st.set_page_config(page_title="Alpha-Logic 분석기", layout="wide")
-st.title("📈 Alpha-Logic 주식 분석기 (무결점 통제 모드)")
+st.title("📈 Alpha-Logic 주식 분석기 (무료 안정화 모드)")
 
 with st.sidebar:
     st.header("⚙️ 시스템 상태")
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         PROJECT_ID = st.secrets.get("FIREBASE_PROJECT_ID", "")
-        st.success("✅ 3.1 Flash (무료 티어 / 환각 통제 모드) 가동 중")
+        st.success("✅ 1.5 Flash (무료 티어 / 검색 비활성) 가동 중")
     except Exception as e:
         api_key = ""
         PROJECT_ID = ""
@@ -166,7 +166,7 @@ if history_data:
                 st.success(f"{item['ticker']} 데이터를 불러왔습니다. 본문 탭을 확인하세요.")
 
 # ==========================================
-# 3. Alpha-Logic 핵심 엔진 (무료 티어 + 환각 억제 강제화)
+# 3. Alpha-Logic 핵심 엔진 (무료 티어 404/429 에러 방지)
 # ==========================================
 def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     if not api_key:
@@ -175,24 +175,23 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     try:
         client = genai.Client(api_key=api_key)
         
-        # 초강력 환각 통제 프롬프트
+        # 환각 통제 프롬프트
         anti_hallucination_rules = """
         [초강력 통제 규칙: 환각(Hallucination) 방지 지침]
-        1. 정보의 격리: 당신의 사전 학습된 지식(가중치)은 완전히 배제하라. 오직 구글 실시간 검색 결과의 경계 안에서만 사고하라.
-        2. '모름'의 강제화: 검색 결과에서 명확히 확인되지 않는 수치, 날짜, 사실은 절대 논리적으로 유추하거나 지어내지 마라. 반드시 '확인 불가' 또는 '데이터 없음'으로 기재하라.
-        3. 출처 1:1 매칭: 모든 주요 팩트와 수치 정보에는 반드시 출처(예: 매체명, 공시기관 등)를 명시하라.
-        4. 추정 금지: 형용사적 과장이나 불확실한 미래 추정을 엄격히 금지하며, 수치적 팩트 위주로만 작성하라.
+        1. '모름'의 강제화: 명확히 확인되지 않는 수치, 날짜, 사실은 절대 논리적으로 유추하거나 지어내지 마라. 반드시 '확인 불가' 또는 '데이터 없음'으로 기재하라.
+        2. 출처 1:1 매칭: 모든 주요 팩트와 수치 정보에는 반드시 가용한 범위 내에서 출처(예: 매체명, 공시기관 등)를 명시하라.
+        3. 추정 금지: 형용사적 과장이나 불확실한 미래 추정을 엄격히 금지하며, 수치적 팩트 위주로만 작성하라.
         """
         
         schema_json_string = json.dumps(schema_class.model_json_schema(), ensure_ascii=False)
         enhanced_system_prompt = f"{system_prompt}\n\n{anti_hallucination_rules}\n\n[중요] 출력은 반드시 다음 JSON 스키마 구조를 완벽하게 따르는 순수 JSON 객체여야 한다. 마크다운 기호 없이 JSON만 출력하라:\n{schema_json_string}"
         
         response = client.models.generate_content(
-            model='gemini-3.1-flash', # 무료 티어에서 즉시 호출 가능한 최신 빠르고 안정적인 모델
+            model='gemini-1.5-flash', # 무료 티어에서 가장 안정적으로 작동하는 1.5 Flash 모델 사용
             contents=query,
             config=types.GenerateContentConfig(
                 system_instruction=enhanced_system_prompt,
-                tools=[{"google_search": {}}],  # 실시간 구글 검색 그라운딩
+                # tools=[{"google_search": {}}],  <-- 404/429 에러의 원인인 실시간 검색 도구를 완전히 비활성화했습니다.
                 response_mime_type="application/json",
                 temperature=0.0, # 창의성 0% (완전한 통제 및 일관성 강제)
             )
@@ -209,12 +208,12 @@ tab1, tab2, tab3, tab4 = st.tabs(["📋 종합 리포트", "💎 펀더멘털 �
 
 # --- 탭 1 ---
 with tab1:
-    st.subheader("📋 4대 소스 종합 리포트 분석 (팩트 체크 기반)")
+    st.subheader("📋 4대 소스 종합 리포트 분석")
     company_1 = st.text_input("분석할 기업명 입력 (예: 삼성전자):", key="c1")
     
     if st.button("분석 실행", key="b1") and company_1:
-        with st.spinner("구글 실시간 딥서치 및 팩트 검증 중... (약 10~20초 소요)"):
-            sys_p = "너는 Alpha-Logic이다. 구글 검색을 활용해 해당 기업의 최신 뉴스, 공시, 리포트를 전수조사하라."
+        with st.spinner("AI 엔진 지식 기반 정밀 분석 중..."):
+            sys_p = "너는 Alpha-Logic이다. 해당 기업에 대해 알고 있는 가장 객관적인 정보와 리포트를 전수조사하라."
             res = ask_alpha_logic(f"{company_1} 종합 분석", sys_p, ReportData)
             if res:
                 save_to_firestore(company_1, "종합리포트", res)
@@ -247,7 +246,7 @@ with tab2:
     company_2 = st.text_input("기업명 입력:", key="c2")
     if st.button("펀더멘털 분석", key="b2") and company_2:
         with st.spinner("지표 수집 및 논리 구조화 중..."):
-            sys_p = "너는 Alpha-Logic이다. 수집된 팩트를 기반으로 업종에 맞는 멀티플을 적용하여 해자와 리스크를 분석하라."
+            sys_p = "너는 Alpha-Logic이다. 알고 있는 팩트를 기반으로 업종에 맞는 멀티플을 적용하여 해자와 리스크를 분석하라."
             res = ask_alpha_logic(f"{company_2} 펀더멘털 정밀 분석", sys_p, FundamentalData)
             if res:
                 save_to_firestore(company_2, "펀더멘털", res)
@@ -271,12 +270,12 @@ with tab2:
 
 # --- 탭 3 ---
 with tab3:
-    st.subheader("⚡ 급등락 원인 추적 (실시간 뉴스 역추적)")
+    st.subheader("⚡ 급등락 원인 추적")
     company_3 = st.text_input("종목명 입력:", key="c3")
-    period = st.selectbox("기간 선택", ["오늘", "1주", "1개월"])
+    period = st.selectbox("기간 선택", ["최근 1주", "최근 1개월", "최근 1년"])
     if st.button("원인 추적", key="b3") and company_3:
         with st.spinner("시장 데이터 교차 검증 중..."):
-            sys_p = f"너는 Alpha-Logic이다. {period} 동안의 주가 변동 원인을 찾아 카테고리별로 분류하고 객관적 수치로 평가하라."
+            sys_p = f"너는 Alpha-Logic이다. {period} 동안의 주요 주가 변동 원인을 찾아 카테고리별로 분류하고 객관적 수치로 평가하라."
             res = ask_alpha_logic(f"{company_3} {period} 주가 변동 원인", sys_p, VolatilityData)
             if res:
                 save_to_firestore(f"{company_3}({period})", "급등락", res)
@@ -284,7 +283,7 @@ with tab3:
                 with st.expander("🤖 엔진의 논리 검증 과정 (Chain of Thought)"):
                     st.write(res.get('reasoning_process', '기록 없음'))
 
-                st.subheader(f"해당 기간 변동률: {res.get('change_percent', 'N/A')}")
+                st.subheader(f"변동 요약: {res.get('change_percent', 'N/A')}")
                 for card in res.get('reason_cards', []):
                     with st.expander(f"🔥 [{card.get('impact_level', 0)}/5] {card.get('title', '')} ({card.get('category', '')})", expanded=True):
                         st.write(card.get('description', ''))
