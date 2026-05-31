@@ -101,7 +101,7 @@ class RadarData(BaseModel):
 # 2. UI 및 Firebase 설정
 # ==========================================
 st.set_page_config(page_title="Alpha-Logic 분석기", layout="wide")
-st.title("📈 Alpha-Logic 주식 분석기 (v2.0 Gemini Pro)")
+st.title("📈 Alpha-Logic 주식 분석기 (v2.0 Gemini Flash)")
 
 # Streamlit 비밀 금고(Secrets)에서 안전하게 키를 불러옵니다.
 with st.sidebar:
@@ -109,7 +109,7 @@ with st.sidebar:
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         PROJECT_ID = st.secrets.get("FIREBASE_PROJECT_ID", "")
-        st.success("✅ Alpha-Logic 엔진(1.5 Pro) 가동 중")
+        st.success("✅ Alpha-Logic 엔진(1.5 Flash) 가동 중")
         st.caption("가족 공용 모드로 안전하게 연결되었습니다.")
     except Exception as e:
         api_key = ""
@@ -129,7 +129,10 @@ def save_to_firestore(ticker, tab_name, data):
             "timestamp": {"stringValue": datetime.now().strftime("%Y-%m-%d %H:%M")}
         }
     }
-    requests.post(url, json=payload)
+    try:
+        requests.post(url, json=payload)
+    except:
+        pass
 
 def load_history_from_firestore():
     if not PROJECT_ID: return []
@@ -162,20 +165,21 @@ if history_data:
                 st.success(f"{item['ticker']} 데이터를 불러왔습니다. 본문 탭을 확인하세요.")
 
 # ==========================================
-# 3. Alpha-Logic 핵심 엔진 (1.5 Pro 최적화)
+# 3. Alpha-Logic 핵심 엔진 (1.5 Flash 최적화)
 # ==========================================
 def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     if not api_key:
+        st.warning("API 키가 설정되지 않았습니다.")
         return None
     try:
         client = genai.Client(api_key=api_key)
         
-        # 1.5 Pro 모델의 제약을 우회하기 위한 프롬프트 엔지니어링 주입
+        # 모델의 제약을 우회하기 위한 프롬프트 엔지니어링 주입
         schema_json_string = json.dumps(schema_class.model_json_schema(), ensure_ascii=False)
         enhanced_system_prompt = f"{system_prompt}\n\n[중요] 출력은 반드시 다음 JSON 스키마 구조를 완벽하게 따르는 순수 JSON 객체여야 한다. 마크다운 기호 없이 JSON만 출력하라:\n{schema_json_string}"
         
         response = client.models.generate_content(
-            model='gemini-1.5-pro',
+            model='gemini-1.5-flash',  # 무료 API 키 + 검색 기능 동시 지원이 확인된 안정적 모델
             contents=query,
             config=types.GenerateContentConfig(
                 system_instruction=enhanced_system_prompt,
@@ -200,7 +204,7 @@ with tab1:
     company_1 = st.text_input("분석할 기업명 입력 (예: 삼성전자):", key="c1")
     
     if st.button("분석 실행", key="b1") and company_1:
-        with st.spinner("데이터 수집 및 정밀 분석 중... (약 15~30초 소요)"):
+        with st.spinner("데이터 수집 및 정밀 분석 중... (약 10~20초 소요)"):
             sys_p = "너는 Alpha-Logic이다. 최근 1개월 이내의 뉴스, 공시, 리포트를 전수조사하여 객관적으로 요약하라. 출처와 날짜를 반드시 명시하라."
             res = ask_alpha_logic(f"{company_1} 종합 분석", sys_p, ReportData)
             if res:
