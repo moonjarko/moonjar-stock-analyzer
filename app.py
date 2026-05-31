@@ -107,14 +107,14 @@ class RadarData(BaseModel):
 # 2. UI 및 Firebase 통신 설정
 # ==========================================
 st.set_page_config(page_title="Alpha-Logic 분석기", layout="wide")
-st.title("📈 Alpha-Logic 주식 분석기 (데이터 수집 강화형)")
+st.title("📈 Alpha-Logic 주식 분석기 (우회 수집 강화형)")
 
 with st.sidebar:
     st.header("⚙️ 시스템 상태")
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         PROJECT_ID = st.secrets.get("FIREBASE_PROJECT_ID", "")
-        st.success("✅ 2.5 Flash + 자동 종목코드 및 2중 수집기 가동 중")
+        st.success("✅ 2.5 Flash + Yahoo 봇 차단 우회 시스템 가동 중")
     except Exception as e:
         api_key = ""
         PROJECT_ID = ""
@@ -138,7 +138,7 @@ def save_to_firestore(ticker, tab_name, data):
         pass
 
 # ==========================================
-# 3. AI 기반 자동 종목코드(Ticker) 변환기 (강력 정제)
+# 3. AI 기반 자동 종목코드(Ticker) 변환기
 # ==========================================
 def get_auto_ticker(company_name):
     if not api_key: return company_name
@@ -146,9 +146,8 @@ def get_auto_ticker(company_name):
         client = genai.Client(api_key=api_key)
         sys_prompt = """
         사용자가 입력한 기업명의 Yahoo Finance 전용 Ticker(종목코드)만 정확히 1개 출력하라.
-        - 한국 코스피 주식은 뒤에 .KS를 붙인다 (예: 삼성전자 -> 005930.KS)
-        - 한국 코스닥 주식은 뒤에 .KQ를 붙인다 (예: 에코프로 -> 086520.KQ)
-        - 미국 주식은 그대로 출력한다 (예: 애플 -> AAPL)
+        - 한국 주식은 6자리 숫자만 출력하라. (뒤에 .KS나 .KQ를 붙이지 마라. 시스템이 알아서 붙인다.)
+        - 미국 주식은 영어 코드만 출력하라 (예: 애플 -> AAPL, 테슬라 -> TSLA)
         - 어떠한 부연 설명 없이 코드만 대답하라.
         """
         res = client.models.generate_content(
@@ -158,8 +157,8 @@ def get_auto_ticker(company_name):
         )
         raw_ticker = res.text.strip()
         
-        # [팩트 강화] AI가 헛소리를 섞었을 경우 대비, 정규식으로 영문/숫자/마침표만 강제 추출
-        match = re.search(r'[A-Za-z0-9.]+', raw_ticker)
+        # 정규식으로 영문/숫자 강제 추출 (오염 방지)
+        match = re.search(r'[A-Za-z0-9]+', raw_ticker)
         if match:
             return match.group(0).upper()
         return raw_ticker.upper()
@@ -167,57 +166,69 @@ def get_auto_ticker(company_name):
         return company_name
 
 # ==========================================
-# 4. 실시간 주가 수집 (yfinance API - 2중 안전장치)
+# 4. 실시간 주가 수집 (Yahoo 봇 차단 우회 엔진)
 # ==========================================
 def fetch_realtime_data(ticker_symbol):
     try:
-        # 안전망: 코드에 문자열이 섞여 들어왔을 수 있으니 공백 제거
         ticker_symbol = ticker_symbol.strip()
+        is_korean = False
         
+        # 한국 주식일 경우 우선 코스피(.KS)로 셋팅
+        if ticker_symbol.isdigit() and len(ticker_symbol) == 6:
+            ticker_symbol += ".KS"
+            is_korean = True
+            
         stock = yf.Ticker(ticker_symbol)
-        info = stock.info
         
-        # 1차 시도: info(기본 메타데이터)에서 수집
-        current_price = info.get('currentPrice', info.get('regularMarketPrice', None))
-        prev_close = info.get('previousClose', None)
-        market_cap = info.get('marketCap', None)
+        # 팩트: 차단이 심한 .info 대신, 차트 데이터인 .history()를 사용하여 주가를 강제 추출합니다.
+        hist = stock.history(period="5d")
         
-        # 2차 시도 (팩트 강화): 야후 서버가 info 접근을 막았을 경우 차트(history) 데이터에서 강제 추출
-        if current_price is None:
+        # 코스피(.KS)에서 조회 실패 시 코스닥(.KQ)으로 즉시 전환하여 재시도
+        if hist.empty and is_korean:
+            ticker_symbol = ticker_symbol.replace(".KS", ".KQ")
+            stock = yf.Ticker(ticker_symbol)
             hist = stock.history(period="5d")
-            if not hist.empty:
-                current_price = float(hist['Close'].iloc[-1])
-                if len(hist) > 1:
-                    prev_close = float(hist['Close'].iloc[-2])
-        
-        if current_price is None:
-            return "조회 실패(야후 응답없음)", "조회 실패", "조회 실패", ticker_symbol
+            
+        if hist.empty:
+            return "조회 실패(야후 차트 없음)", "조회 실패", "조회 실패", ticker_symbol
 
-        # 포맷팅 연산
-        price_str = f"{current_price:,.0f}" if current_price else "데이터 없음"
+        # 최신 종가 및 전일 종가 추출
+        current_price = float(hist['Close'].iloc[-1])
+        prev_close = float(hist['Close'].iloc[-2]) if len(hist) > 1 else current_price
         
-        if current_price and prev_close:
+        # 가격 포맷팅 (미국주식 달러 소수점 vs 한국주식 원화 처리)
+        if current_price < 2000 and not is_korean:
+            price_str = f"{current_price:,.2f}"
+        else:
+            price_str = f"{current_price:,.0f}"
+            
+        # 변동률 계산
+        if prev_close > 0:
             change_pct = ((current_price - prev_close) / prev_close) * 100
             change_str = f"{change_pct:+.2f}%"
         else:
-            change_str = "데이터 없음"
+            change_str = "0.00%"
             
-        if market_cap:
+        # 팩트: 차단이 덜한 fast_info를 활용하여 시가총액 추출
+        try:
+            market_cap = stock.fast_info['marketCap']
             if market_cap > 1_000_000_000_000:
                 cap_str = f"{market_cap / 1_000_000_000_000:,.1f}조"
             elif market_cap > 100_000_000:
                 cap_str = f"{market_cap / 100_000_000:,.0f}억"
             else:
-                cap_str = f"{market_cap:,}"
-        else:
-            cap_str = "데이터 없음"
+                cap_str = f"{market_cap:,.0f}"
+        except:
+            cap_str = "확인 불가"
             
         return price_str, change_str, cap_str, ticker_symbol
+        
     except Exception as e:
-        return f"조회 실패(에러)", "조회 실패", "조회 실패", ticker_symbol
+        # 에러 발생 시 문자열 잘림 방지를 위해 에러명 10자만 표기
+        return f"통신 에러", "통신 에러", "통신 에러", ticker_symbol
 
 # ==========================================
-# 5. Alpha-Logic 엔진 (프롬프트 주입 방식)
+# 5. Alpha-Logic 엔진
 # ==========================================
 def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     if not api_key:
@@ -274,7 +285,7 @@ tab1, tab2, tab3, tab4 = st.tabs(["📋 종합 리포트", "💎 펀더멘털 �
 # --- 탭 1 ---
 with tab1:
     st.subheader("📋 실시간 융합 리포트 분석")
-    company_1 = st.text_input("기업명 입력 (예: 삼성전자, 애플, 테슬라):", key="c1_name")
+    company_1 = st.text_input("기업명 입력 (예: 삼성전자, 애플, 에코프로):", key="c1_name")
     
     if st.button("분석 실행", key="b1") and company_1:
         with st.spinner(f"[{company_1}]의 정확한 종목코드를 탐색 중입니다..."):
@@ -295,7 +306,7 @@ with tab1:
             if res:
                 save_to_firestore(company_1, "종합리포트", res)
                 
-                with st.expander(f"🤖 자동 변환된 종목코드: {final_ticker}"):
+                with st.expander(f"🤖 종목코드 분석 완료: {final_ticker}"):
                     st.write(res.get('reasoning_process', '기록 없음'))
 
                 col1, col2, col3, col4 = st.columns(4)
