@@ -101,7 +101,7 @@ class RadarData(BaseModel):
 # 2. UI 및 Firebase 설정
 # ==========================================
 st.set_page_config(page_title="Alpha-Logic 분석기", layout="wide")
-st.title("📈 Alpha-Logic 주식 분석기 (v2.0 Gemini Flash)")
+st.title("📈 Alpha-Logic 주식 분석기 (v3.1 Gemini Pro)")
 
 # Streamlit 비밀 금고(Secrets)에서 안전하게 키를 불러옵니다.
 with st.sidebar:
@@ -109,7 +109,7 @@ with st.sidebar:
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         PROJECT_ID = st.secrets.get("FIREBASE_PROJECT_ID", "")
-        st.success("✅ Alpha-Logic 엔진(1.5 Flash) 가동 중")
+        st.success("✅ Alpha-Logic 최상위 엔진(3.1 Pro Preview) 가동 중")
         st.caption("가족 공용 모드로 안전하게 연결되었습니다.")
     except Exception as e:
         api_key = ""
@@ -165,7 +165,7 @@ if history_data:
                 st.success(f"{item['ticker']} 데이터를 불러왔습니다. 본문 탭을 확인하세요.")
 
 # ==========================================
-# 3. Alpha-Logic 핵심 엔진 (1.5 Flash 최적화)
+# 3. Alpha-Logic 핵심 엔진 (최상위 Gemini 3.1 Pro Preview 적용)
 # ==========================================
 def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     if not api_key:
@@ -174,23 +174,23 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     try:
         client = genai.Client(api_key=api_key)
         
-        # 모델의 제약을 우회하기 위한 프롬프트 엔지니어링 주입
+        # Pydantic 스키마를 JSON 문자열로 변환하여 프롬프트에 주입 (충돌 완벽 차단)
         schema_json_string = json.dumps(schema_class.model_json_schema(), ensure_ascii=False)
         enhanced_system_prompt = f"{system_prompt}\n\n[중요] 출력은 반드시 다음 JSON 스키마 구조를 완벽하게 따르는 순수 JSON 객체여야 한다. 마크다운 기호 없이 JSON만 출력하라:\n{schema_json_string}"
         
         response = client.models.generate_content(
-            model='gemini-1.5-flash',  # 무료 API 키 + 검색 기능 동시 지원이 확인된 안정적 모델
+            model='gemini-3.1-pro-preview',  
             contents=query,
             config=types.GenerateContentConfig(
                 system_instruction=enhanced_system_prompt,
-                tools=[{"google_search": {}}], 
-                response_mime_type="application/json",
+                tools=[{"google_search": {}}],  # 실시간 구글 검색 그라운딩 
+                response_mime_type="application/json", 
                 temperature=0.15,
             )
         )
         return json.loads(response.text)
     except Exception as e:
-        st.error(f"Alpha-Logic 엔진 오류 발생: {e}")
+        st.error(f"Alpha-Logic 엔진(3.1 Pro) 오류 발생: {e}")
         return None
 
 # ==========================================
@@ -200,20 +200,20 @@ tab1, tab2, tab3, tab4 = st.tabs(["📋 종합 리포트", "💎 펀더멘털 �
 
 # --- 탭 1 ---
 with tab1:
-    st.subheader("📋 4대 소스 종합 리포트 분석")
+    st.subheader("📋 4대 소스 종합 리포트 분석 (실시간 검색 기반)")
     company_1 = st.text_input("분석할 기업명 입력 (예: 삼성전자):", key="c1")
     
     if st.button("분석 실행", key="b1") and company_1:
-        with st.spinner("데이터 수집 및 정밀 분석 중... (약 10~20초 소요)"):
-            sys_p = "너는 Alpha-Logic이다. 최근 1개월 이내의 뉴스, 공시, 리포트를 전수조사하여 객관적으로 요약하라. 출처와 날짜를 반드시 명시하라."
+        with st.spinner("구글 실시간 딥서치 및 정밀 분석 중..."):
+            sys_p = "너는 Alpha-Logic이다. 구글 검색을 활용해 해당 기업의 최신 뉴스, 공시, 리포트를 전수조사하여 객관적으로 요약하라. 출처와 날짜를 반드시 명시하라."
             res = ask_alpha_logic(f"{company_1} 종합 분석", sys_p, ReportData)
             if res:
                 save_to_firestore(company_1, "종합리포트", res)
                 col1, col2, col3, col4 = st.columns(4)
-                col1.metric("현재가", res.get('current_price', 'N/A'))
-                col2.metric("전일대비", res.get('price_change_percent', 'N/A'))
+                col1.metric("현재가/최근가", res.get('current_price', 'N/A'))
+                col2.metric("변동", res.get('price_change_percent', 'N/A'))
                 col3.metric("시가총액", res.get('market_cap', 'N/A'))
-                col4.metric("업종/시각", f"{res.get('industry_type', 'N/A')} / {res.get('timestamp', 'N/A')}")
+                col4.metric("업종", res.get('industry_type', 'N/A'))
                 
                 st.markdown(f"### 🎯 투자의견: **{res.get('consensus_opinion', 'N/A')}** (목표가: {res.get('target_price', 'N/A')})")
                 st.info(f"**밸류에이션 요약**: {res.get('valuation_summary', '')}")
@@ -224,7 +224,7 @@ with tab1:
                     for issue in res.get('recent_issues', []):
                         st.write(f"- **[{issue.get('date', '')}]** {issue.get('content', '')} *(출처: {issue.get('source', '')})*")
                 with c_b:
-                    st.markdown("### 🟢🟡🔴 팩트 시트")
+                    st.markdown("### 🟢🟡🔴 팩트 시트 검증")
                     for fact in res.get('fact_sheets', []):
                         st.write(f"- **{fact.get('tone', '')}** | {fact.get('point', '')} *(출처: {fact.get('source', '')})*")
 
@@ -234,7 +234,7 @@ with tab2:
     company_2 = st.text_input("기업명 입력:", key="c2")
     if st.button("펀더멘털 분석", key="b2") and company_2:
         with st.spinner("밸류에이션 및 경제적 해자 심층 분석 중..."):
-            sys_p = "너는 Alpha-Logic이다. 업종에 맞는 멀티플을 적용하고 경제적 해자와 그에 대한 비판적 리스크(Bear case)를 1:1로 짝지어 분석하라."
+            sys_p = "너는 Alpha-Logic이다. 구글 검색을 통해 최신 펀더멘털 지표를 확인하고, 업종에 맞는 멀티플을 적용하여 경제적 해자와 비판적 리스크(Bear case)를 분석하라."
             res = ask_alpha_logic(f"{company_2} 펀더멘털 정밀 분석", sys_p, FundamentalData)
             if res:
                 save_to_firestore(company_2, "펀더멘털", res)
@@ -254,12 +254,12 @@ with tab2:
 
 # --- 탭 3 ---
 with tab3:
-    st.subheader("⚡ 급등락 원인 추적")
+    st.subheader("⚡ 급등락 원인 추적 (실시간 뉴스 역추적)")
     company_3 = st.text_input("종목명 입력:", key="c3")
     period = st.selectbox("기간 선택", ["오늘", "1주", "1개월"])
     if st.button("원인 추적", key="b3") and company_3:
         with st.spinner("실시간 뉴스 및 공시를 역추적 중..."):
-            sys_p = "너는 Alpha-Logic이다. 주가 변동의 핵심 원인을 찾아 카테고리별로 분류하고 영향력을 평가하라."
+            sys_p = f"너는 Alpha-Logic이다. 구글 검색을 활용해 {period} 동안의 주가 변동 원인을 찾아 카테고리별로 분류하고 영향력을 평가하라."
             res = ask_alpha_logic(f"{company_3} {period} 주가 변동 원인", sys_p, VolatilityData)
             if res:
                 save_to_firestore(f"{company_3}({period})", "급등락", res)
@@ -271,11 +271,11 @@ with tab3:
 
 # --- 탭 4 ---
 with tab4:
-    st.subheader("📡 종목 레이더")
+    st.subheader("📡 종목 레이더 (시장 컨센서스 스크리닝)")
     condition = st.text_input("조건 입력 (예: 배당 성장주, 턴어라운드 기대주):", value="저PBR 리레이팅")
     if st.button("레이더 가동", key="b4") and condition:
         with st.spinner("시장 컨센서스 스크리닝 중..."):
-            sys_p = "너는 Alpha-Logic이다. 제시된 조건에 가장 잘 부합하는 핵심 종목들을 시장 컨센서스 기반으로 5개 수집하라."
+            sys_p = "너는 Alpha-Logic이다. 구글 검색을 활용하여 제시된 조건에 가장 잘 부합하며 최근 긍정적으로 거론되는 종목 5개를 수집하라."
             res = ask_alpha_logic(f"조건 [{condition}] 종목 수집", sys_p, RadarData)
             if res:
                 save_to_firestore(condition, "레이더", res)
