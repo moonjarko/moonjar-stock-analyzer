@@ -5,11 +5,10 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 import json
 import requests
-import re
 from datetime import datetime
 
 # ==========================================
-# 1. Pydantic 구조 (Gemini JSON 파싱 및 CoT 강제용)
+# 1. Pydantic 구조 (JSON 파싱 및 강제용)
 # ==========================================
 class SourceItem(BaseModel):
     title: str = Field(description="출처 매체명 또는 리포트명")
@@ -106,14 +105,14 @@ class RadarData(BaseModel):
 # 2. UI 및 Firebase 설정
 # ==========================================
 st.set_page_config(page_title="Alpha-Logic 분석기", layout="wide")
-st.title("📈 Alpha-Logic 주식 분석기 (실시간 검색 통제 모드)")
+st.title("📈 Alpha-Logic 주식 분석기 (2.0 Flash / 실시간 검색)")
 
 with st.sidebar:
     st.header("⚙️ 시스템 상태")
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         PROJECT_ID = st.secrets.get("FIREBASE_PROJECT_ID", "")
-        st.success("✅ 1.5 Flash (무료 티어 / 검색 + 구조화 충돌 해결) 가동 중")
+        st.success("✅ 2.0 Flash (무료 티어 표준 엔진) 가동 중")
     except Exception as e:
         api_key = ""
         PROJECT_ID = ""
@@ -166,7 +165,7 @@ if history_data:
                 st.success(f"{item['ticker']} 데이터를 불러왔습니다. 본문 탭을 확인하세요.")
 
 # ==========================================
-# 3. Alpha-Logic 핵심 엔진 (충돌 우회 및 데이터 클렌징)
+# 3. Alpha-Logic 핵심 엔진 (2.0 Flash 적용)
 # ==========================================
 def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     if not api_key:
@@ -175,40 +174,27 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     try:
         client = genai.Client(api_key=api_key)
         
-        # 환각 통제 및 출력 강제 프롬프트
         anti_hallucination_rules = """
         [초강력 통제 규칙: 환각(Hallucination) 방지 지침]
         1. '모름'의 강제화: 실시간 검색 결과에서 명확히 확인되지 않는 수치, 날짜, 사실은 절대 유추하거나 지어내지 마라.
         2. 출처 1:1 매칭: 모든 주요 팩트와 수치 정보에는 검색된 팩트 기반의 출처를 명시하라.
-        3. 마크다운 완전 금지: 시작과 끝에 ```json 이나 ``` 같은 기호를 절대 붙이지 말고 오직 순수한 JSON 중괄호 {} 만 출력하라.
         """
         
         schema_json_string = json.dumps(schema_class.model_json_schema(), ensure_ascii=False)
         enhanced_system_prompt = f"{system_prompt}\n\n{anti_hallucination_rules}\n\n[중요] 출력은 반드시 다음 JSON 스키마 구조를 완벽하게 따르는 순수 JSON 객체여야 한다:\n{schema_json_string}"
         
+        # 팩트: 현재 구글 무료 티어에서 검색 도구를 완벽히 지원하는 공식 2.0 모델 적용
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-2.0-flash', 
             contents=query,
             config=types.GenerateContentConfig(
                 system_instruction=enhanced_system_prompt,
-                tools=[{"google_search": {}}],  # 표준 SDK에 맞는 정확한 도구 명칭
-                # response_mime_type="application/json", # API단 충돌을 막기 위해 비활성화 (프롬프트로 강제함)
+                tools=[{"google_search": {}}],  # 구글 공식 지원 실시간 검색 도구 명칭
+                response_mime_type="application/json", # 안정적인 JSON 파싱 복구
                 temperature=0.0, 
             )
         )
-        
-        # JSON 파싱 전처리: 검색 도구가 덧붙인 마크다운 기호 및 찌꺼기 클렌징
-        raw_text = response.text.strip()
-        raw_text = re.sub(r"^```json\s*", "", raw_text)
-        raw_text = re.sub(r"^```\s*", "", raw_text)
-        raw_text = re.sub(r"\s*```$", "", raw_text)
-        raw_text = raw_text.strip()
-        
-        return json.loads(raw_text)
-        
-    except json.JSONDecodeError as je:
-        st.error("데이터 구조화 과정에서 충돌이 발생했습니다. 다시 시도해 주세요.")
-        return None
+        return json.loads(response.text)
     except Exception as e:
         st.error(f"엔진 오류 발생: {e}")
         return None
@@ -224,7 +210,7 @@ with tab1:
     company_1 = st.text_input("분석할 기업명 입력 (예: 삼성전자):", key="c1")
     
     if st.button("분석 실행", key="b1") and company_1:
-        with st.spinner("실시간 구글 검색 및 정밀 분석 중... (데이터 클렌징 포함)"):
+        with st.spinner("실시간 구글 검색 및 정밀 분석 중..."):
             sys_p = "너는 Alpha-Logic이다. 구글 검색을 적극 활용하여 해당 기업의 최신 객관적인 정보와 리포트를 조사하라."
             res = ask_alpha_logic(f"{company_1} 종합 분석", sys_p, ReportData)
             if res:
