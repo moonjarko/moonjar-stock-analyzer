@@ -186,11 +186,11 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
         enhanced_system_prompt = f"{system_prompt}\n\n{anti_hallucination_rules}\n\n[중요] 출력은 반드시 다음 JSON 스키마 구조를 완벽하게 따르는 순수 JSON 객체여야 한다. 마크다운 기호 없이 JSON만 출력하라:\n{schema_json_string}"
         
         response = client.models.generate_content(
-            model='gemini-1.5-flash', # 실존하는 1.5 Flash 모델 (무료 티어 내 넉넉한 RPM 지원)
+            model='gemini-1.5-flash',
             contents=query,
             config=types.GenerateContentConfig(
                 system_instruction=enhanced_system_prompt,
-                tools=[{"google_search": {}}],  # 고객님의 지적대로 실시간 구글 검색 기능을 정상 활성화
+                tools=[{"googleSearchRetrieval": {}}],  # 👈 고객님께서 짚어주신 공식 문서의 정확한 도구 명칭을 적용했습니다!
                 response_mime_type="application/json",
                 temperature=0.0, 
             )
@@ -204,8 +204,6 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
 # 4. 메인 화면 구성 (4개 탭)
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["📋 종합 리포트", "💎 펀더멘털 분석", "⚡ 급등락 원인", "📡 종목 레이더"])
-
-# (이하 각 탭별 로직은 검색 결과를 구조화하여 표출하는 기존 코드와 동일하게 유지)
 
 # --- 탭 1 ---
 with tab1:
