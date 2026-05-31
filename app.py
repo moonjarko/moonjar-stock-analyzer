@@ -108,9 +108,13 @@ st.set_page_config(page_title="Alpha-Logic 분석기", layout="wide")
 st.title("📈 Alpha-Logic 주식 분석기 (v2.0 Gemini+Firestore)")
 
 with st.sidebar:
-    st.header("⚙️ 시스템 설정")
-    api_key = st.text_input("Google AI Studio API Key", type="password")
-    PROJECT_ID = st.text_input("Firebase Project ID (선택)", value="")
+    st.header("⚙️ 시스템 상태")
+    # Streamlit 클라우드 비밀 금고에서 키를 자동으로 꺼내옵니다.
+    api_key = st.secrets["GEMINI_API_KEY"]
+    PROJECT_ID = st.secrets.get("FIREBASE_PROJECT_ID", "")
+    
+    st.success("✅ Alpha-Logic 엔진 가동 중")
+    st.caption("가족 공용 모드로 안전하게 연결되었습니다.")
     st.markdown("---")
 
 # --- Firebase 데이터베이스 REST API ---
