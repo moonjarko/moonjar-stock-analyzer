@@ -26,7 +26,7 @@ class FactSheetItem(BaseModel):
     source: str = Field(description="반드시 특정 매체명과 발행일 기재")
 
 class ReportData(BaseModel):
-    reasoning_process: str = Field(description="본 데이터를 도출하기 위해 수행한 논리적 팩트 체크 과정 (가장 먼저 작성할 것)")
+    reasoning_process: str = Field(description="검색된 최신 데이터를 바탕으로 한 팩트 체크 및 논리적 추론 과정 (가장 먼저 작성할 것)")
     current_price: str = Field(description="확인 불가 시 '데이터 없음'으로 표기")
     price_change_percent: str = Field(description="확인 불가 시 '데이터 없음'으로 표기")
     market_cap: str = Field(description="확인 불가 시 '데이터 없음'으로 표기")
@@ -61,7 +61,7 @@ class ReratingScenario(BaseModel):
     probability: str
 
 class FundamentalData(BaseModel):
-    reasoning_process: str = Field(description="본 데이터를 도출하기 위해 수행한 논리적 팩트 체크 과정 (가장 먼저 작성할 것)")
+    reasoning_process: str = Field(description="검색된 최신 데이터를 바탕으로 한 팩트 체크 및 논리적 추론 과정 (가장 먼저 작성할 것)")
     selected_multiple_type: str
     valuation_score: int
     valuation_grade: str
@@ -84,7 +84,7 @@ class VolatilityCard(BaseModel):
     source: str = Field(description="반드시 특정 매체명과 발행일 기재")
 
 class VolatilityData(BaseModel):
-    reasoning_process: str = Field(description="주가 변동의 인과관계를 검증한 논리적 추론 과정")
+    reasoning_process: str = Field(description="검색 결과를 바탕으로 주가 변동의 인과관계를 검증한 논리적 추론 과정")
     change_percent: str
     reason_cards: List[VolatilityCard]
 
@@ -98,21 +98,21 @@ class RadarCard(BaseModel):
     source: str = Field(description="반드시 특정 매체명과 발행일 기재")
 
 class RadarData(BaseModel):
-    reasoning_process: str = Field(description="해당 조건에 부합하는 종목을 필터링하고 검증한 기준 및 과정")
+    reasoning_process: str = Field(description="검색 결과를 바탕으로 해당 조건에 부합하는 종목을 필터링하고 검증한 기준 및 과정")
     candidates: List[RadarCard]
 
 # ==========================================
 # 2. UI 및 Firebase 설정
 # ==========================================
 st.set_page_config(page_title="Alpha-Logic 분석기", layout="wide")
-st.title("📈 Alpha-Logic 주식 분석기 (무료 안정화 모드)")
+st.title("📈 Alpha-Logic 주식 분석기 (실시간 검색 가동 모드)")
 
 with st.sidebar:
     st.header("⚙️ 시스템 상태")
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         PROJECT_ID = st.secrets.get("FIREBASE_PROJECT_ID", "")
-        st.success("✅ 1.5 Flash (무료 티어 / 검색 비활성) 가동 중")
+        st.success("✅ 1.5 Flash (무료 티어 / 실시간 검색 활성) 가동 중")
     except Exception as e:
         api_key = ""
         PROJECT_ID = ""
@@ -156,7 +156,6 @@ def load_history_from_firestore():
         return []
     return []
 
-# 사이드바 기록 불러오기 UI
 history_data = load_history_from_firestore()
 if history_data:
     with st.sidebar.expander("📚 가족 최근 분석 기록 (최신순)"):
@@ -166,7 +165,7 @@ if history_data:
                 st.success(f"{item['ticker']} 데이터를 불러왔습니다. 본문 탭을 확인하세요.")
 
 # ==========================================
-# 3. Alpha-Logic 핵심 엔진 (무료 티어 404/429 에러 방지)
+# 3. Alpha-Logic 핵심 엔진 (실시간 검색 도구 정상 결합)
 # ==========================================
 def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     if not api_key:
@@ -178,22 +177,22 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
         # 환각 통제 프롬프트
         anti_hallucination_rules = """
         [초강력 통제 규칙: 환각(Hallucination) 방지 지침]
-        1. '모름'의 강제화: 명확히 확인되지 않는 수치, 날짜, 사실은 절대 논리적으로 유추하거나 지어내지 마라. 반드시 '확인 불가' 또는 '데이터 없음'으로 기재하라.
-        2. 출처 1:1 매칭: 모든 주요 팩트와 수치 정보에는 반드시 가용한 범위 내에서 출처(예: 매체명, 공시기관 등)를 명시하라.
-        3. 추정 금지: 형용사적 과장이나 불확실한 미래 추정을 엄격히 금지하며, 수치적 팩트 위주로만 작성하라.
+        1. '모름'의 강제화: 실시간 검색 결과에서 명확히 확인되지 않는 수치, 날짜, 사실은 절대 유추하거나 지어내지 마라. 반드시 '확인 불가' 또는 '데이터 없음'으로 기재하라.
+        2. 출처 1:1 매칭: 모든 주요 팩트와 수치 정보에는 검색된 팩트 기반의 출처를 명시하라.
+        3. 추정 금지: 불확실한 미래 추정을 엄격히 금지하며, 수치적 팩트 위주로만 작성하라.
         """
         
         schema_json_string = json.dumps(schema_class.model_json_schema(), ensure_ascii=False)
         enhanced_system_prompt = f"{system_prompt}\n\n{anti_hallucination_rules}\n\n[중요] 출력은 반드시 다음 JSON 스키마 구조를 완벽하게 따르는 순수 JSON 객체여야 한다. 마크다운 기호 없이 JSON만 출력하라:\n{schema_json_string}"
         
         response = client.models.generate_content(
-            model='gemini-1.5-flash', # 무료 티어에서 가장 안정적으로 작동하는 1.5 Flash 모델 사용
+            model='gemini-1.5-flash', # 실존하는 1.5 Flash 모델 (무료 티어 내 넉넉한 RPM 지원)
             contents=query,
             config=types.GenerateContentConfig(
                 system_instruction=enhanced_system_prompt,
-                # tools=[{"google_search": {}}],  <-- 404/429 에러의 원인인 실시간 검색 도구를 완전히 비활성화했습니다.
+                tools=[{"google_search": {}}],  # 고객님의 지적대로 실시간 구글 검색 기능을 정상 활성화
                 response_mime_type="application/json",
-                temperature=0.0, # 창의성 0% (완전한 통제 및 일관성 강제)
+                temperature=0.0, 
             )
         )
         return json.loads(response.text)
@@ -206,14 +205,16 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["📋 종합 리포트", "💎 펀더멘털 분석", "⚡ 급등락 원인", "📡 종목 레이더"])
 
+# (이하 각 탭별 로직은 검색 결과를 구조화하여 표출하는 기존 코드와 동일하게 유지)
+
 # --- 탭 1 ---
 with tab1:
     st.subheader("📋 4대 소스 종합 리포트 분석")
     company_1 = st.text_input("분석할 기업명 입력 (예: 삼성전자):", key="c1")
     
     if st.button("분석 실행", key="b1") and company_1:
-        with st.spinner("AI 엔진 지식 기반 정밀 분석 중..."):
-            sys_p = "너는 Alpha-Logic이다. 해당 기업에 대해 알고 있는 가장 객관적인 정보와 리포트를 전수조사하라."
+        with st.spinner("실시간 구글 검색 및 정밀 분석 중..."):
+            sys_p = "너는 Alpha-Logic이다. 구글 검색을 적극 활용하여 해당 기업의 최신 객관적인 정보와 리포트를 조사하라."
             res = ask_alpha_logic(f"{company_1} 종합 분석", sys_p, ReportData)
             if res:
                 save_to_firestore(company_1, "종합리포트", res)
@@ -245,8 +246,8 @@ with tab2:
     st.subheader("💎 본질가치 및 해자 분석")
     company_2 = st.text_input("기업명 입력:", key="c2")
     if st.button("펀더멘털 분석", key="b2") and company_2:
-        with st.spinner("지표 수집 및 논리 구조화 중..."):
-            sys_p = "너는 Alpha-Logic이다. 알고 있는 팩트를 기반으로 업종에 맞는 멀티플을 적용하여 해자와 리스크를 분석하라."
+        with st.spinner("실시간 검색 기반 지표 수집 및 논리 구조화 중..."):
+            sys_p = "너는 Alpha-Logic이다. 실시간 구글 검색 팩트를 기반으로 업종에 맞는 멀티플을 적용하여 해자와 리스크를 분석하라."
             res = ask_alpha_logic(f"{company_2} 펀더멘털 정밀 분석", sys_p, FundamentalData)
             if res:
                 save_to_firestore(company_2, "펀더멘털", res)
@@ -274,8 +275,8 @@ with tab3:
     company_3 = st.text_input("종목명 입력:", key="c3")
     period = st.selectbox("기간 선택", ["최근 1주", "최근 1개월", "최근 1년"])
     if st.button("원인 추적", key="b3") and company_3:
-        with st.spinner("시장 데이터 교차 검증 중..."):
-            sys_p = f"너는 Alpha-Logic이다. {period} 동안의 주요 주가 변동 원인을 찾아 카테고리별로 분류하고 객관적 수치로 평가하라."
+        with st.spinner("실시간 뉴스 교차 검증 중..."):
+            sys_p = f"너는 Alpha-Logic이다. 구글 검색을 활용해 {period} 동안의 주요 주가 변동 원인을 찾아 분류하라."
             res = ask_alpha_logic(f"{company_3} {period} 주가 변동 원인", sys_p, VolatilityData)
             if res:
                 save_to_firestore(f"{company_3}({period})", "급등락", res)
@@ -294,8 +295,8 @@ with tab4:
     st.subheader("📡 종목 레이더 (조건부 스크리닝)")
     condition = st.text_input("조건 입력 (예: 배당 성장주, 턴어라운드 기대주):", value="저PBR 리레이팅")
     if st.button("레이더 가동", key="b4") and condition:
-        with st.spinner("팩트 기반 스크리닝 진행 중..."):
-            sys_p = "너는 Alpha-Logic이다. 제시된 조건에 정확히 부합하는 종목을 탐색하고 반드시 그 근거를 명시하라."
+        with st.spinner("구글 검색 기반 스크리닝 진행 중..."):
+            sys_p = "너는 Alpha-Logic이다. 구글 검색을 활용해 제시된 조건에 정확히 부합하는 종목을 탐색하고 반드시 그 근거를 명시하라."
             res = ask_alpha_logic(f"조건 [{condition}] 종목 수집", sys_p, RadarData)
             if res:
                 save_to_firestore(condition, "레이더", res)
