@@ -8,6 +8,7 @@ import requests
 import re
 from datetime import datetime
 import yfinance as yf
+from bs4 import BeautifulSoup
 
 # ==========================================
 # 1. Pydantic 구조 (단문 적용으로 SyntaxError 방지)
@@ -107,9 +108,8 @@ class RadarData(BaseModel):
 # 2. UI 설정 및 세션(Session) 상태 초기화
 # ==========================================
 st.set_page_config(page_title="Alpha-Logic 분석기", layout="wide")
-st.title("📈 Alpha-Logic 주식 분석기 (종목 중심 관리형)")
+st.title("📈 Alpha-Logic 주식 분석기 (한미 듀얼 파이프라인)")
 
-# 데이터를 유지하기 위한 세션 상태 초기화
 tabs_names = ["종합리포트", "펀더멘털", "급등락", "레이더"]
 for t in tabs_names:
     if f"{t}_data" not in st.session_state:
@@ -122,16 +122,13 @@ with st.sidebar:
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         PROJECT_ID = st.secrets.get("FIREBASE_PROJECT_ID", "")
-        st.success("✅ 2.5 Flash 엔진 정상 가동 중")
+        st.success("✅ 듀얼 데이터 엔진 (Naver/Yahoo) 가동 중")
     except Exception as e:
         api_key = ""
         PROJECT_ID = ""
         st.error("⚠️ 클라우드 비밀 금고(Secrets) 설정이 필요합니다.")
     st.markdown("---")
 
-# ==========================================
-# 3. Firebase 통신 및 '종목 중심' 공유 UI
-# ==========================================
 def save_to_firestore(ticker, tab_name, data):
     if not PROJECT_ID: return
     url = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents/analysis_logs"
@@ -164,7 +161,6 @@ def load_history_from_firestore():
                     "json_data": json.loads(fields['json_data']['stringValue']),
                     "timestamp": fields['timestamp']['stringValue']
                 })
-            # 최신순 정렬
             history.sort(key=lambda x: x['timestamp'], reverse=True)
             return history
     except:
@@ -173,7 +169,6 @@ def load_history_from_firestore():
 
 all_history = load_history_from_firestore()
 
-# 팩트: 히스토리 데이터를 '종목'과 '레이더'로 분리하여 고유값만 추출합니다.
 stock_history = []
 radar_history = []
 seen_stocks = set()
@@ -185,33 +180,28 @@ for item in all_history:
             seen_radars.add(item['ticker'])
             radar_history.append(item)
     else:
-        # 급등락 탭의 "삼성전자(최근 1주)" 형태에서 순수 종목명만 추출
         raw_ticker = item['ticker'].split("(")[0].strip()
         if raw_ticker not in seen_stocks:
             seen_stocks.add(raw_ticker)
             stock_history.append(raw_ticker)
 
-# 종목 중심 히스토리 사이드바 렌더링
 if stock_history:
     st.sidebar.markdown("### 🏢 최근 검색 종목 (전체 공유)")
-    for stock in stock_history[:12]: # 최근 12개 종목
+    for stock in stock_history[:12]:
         if st.sidebar.button(f"📊 {stock}", key=f"btn_stock_{stock}"):
-            # 1. 다른 종목의 기존 탭 세션 데이터 초기화
             for t in ["종합리포트", "펀더멘털", "급등락"]:
                 st.session_state[f"{t}_data"] = None
                 st.session_state[f"{t}_target"] = stock
             
-            # 2. DB에서 해당 종목의 최신 탭 데이터들을 긁어와서 한 번에 세션에 주입
             loaded_tabs = set()
             for item in all_history:
                 raw_item_ticker = item['ticker'].split("(")[0].strip()
                 if raw_item_ticker == stock and item['tab'] not in loaded_tabs and item['tab'] != '레이더':
                     st.session_state[f"{item['tab']}_data"] = item['json_data']
                     if item['tab'] == '급등락':
-                        st.session_state["급등락_target"] = item['ticker'] # 기간 정보 보존
+                        st.session_state["급등락_target"] = item['ticker']
                     loaded_tabs.add(item['tab'])
-                    
-            st.sidebar.success(f"[{stock}] 데이터를 통합 로드했습니다. 본문을 확인하세요.")
+            st.sidebar.success(f"[{stock}] 데이터를 통합 로드했습니다.")
 
 if radar_history:
     st.sidebar.markdown("### 📡 최근 레이더 조건")
@@ -222,16 +212,16 @@ if radar_history:
             st.sidebar.success(f"[{item['ticker']}] 레이더를 불러왔습니다.")
 
 # ==========================================
-# 4. 기능 엔진 (종목코드 변환, 실시간 주가, AI 파이프라인)
+# 3. AI 기반 자동 종목코드(Ticker) 변환기
 # ==========================================
 def get_auto_ticker(company_name):
     if not api_key: return company_name
     try:
         client = genai.Client(api_key=api_key)
         sys_prompt = """
-        사용자가 입력한 기업명의 Yahoo Finance 전용 Ticker(종목코드)만 정확히 1개 출력하라.
-        - 한국 주식은 6자리 숫자만 출력하라.
-        - 미국 주식은 영어 코드만 출력하라 (예: 애플 -> AAPL)
+        사용자가 입력한 기업명의 주식 식별 코드를 정확히 1개 출력하라.
+        - 한국 주식은 오직 '6자리 숫자'만 출력하라. (.KS나 .KQ 절대 붙이지 말 것)
+        - 미국 주식은 '영어 티커'만 출력하라 (예: 애플 -> AAPL)
         - 어떠한 부연 설명 없이 코드만 대답하라.
         """
         res = client.models.generate_content(
@@ -246,29 +236,55 @@ def get_auto_ticker(company_name):
     except:
         return company_name
 
-def fetch_realtime_data(ticker_symbol):
+# ==========================================
+# 4. 듀얼 파이프라인 (네이버 스크래핑 vs 야후 파이낸스)
+# ==========================================
+def get_naver_finance(ticker):
+    """한국 주식 전용: 네이버 금융 웹 스크래퍼 (접근성 태그 활용)"""
     try:
-        ticker_symbol = ticker_symbol.strip()
-        is_korean = False
-        if ticker_symbol.isdigit() and len(ticker_symbol) == 6:
-            ticker_symbol += ".KS"
-            is_korean = True
-            
-        stock = yf.Ticker(ticker_symbol)
-        hist = stock.history(period="5d")
+        url = f"https://finance.naver.com/item/main.naver?code={ticker}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, 'html.parser')
         
-        if hist.empty and is_korean:
-            ticker_symbol = ticker_symbol.replace(".KS", ".KQ")
-            stock = yf.Ticker(ticker_symbol)
-            hist = stock.history(period="5d")
-            
-        if hist.empty: return "조회 실패", "조회 실패", "조회 실패", ticker_symbol
+        # 1. 가격 및 등락률 (접근성 blind 태그 딕셔너리화)
+        dts = soup.select('dl.blind dt')
+        dds = soup.select('dl.blind dd')
+        info_dict = {dt.text.strip(): dd.text.strip() for dt, dd in zip(dts, dds)}
+        
+        price_str = info_dict.get('현재가', '데이터 없음')
+        change_val = info_dict.get('등락률', '데이터 없음')
+        change_str = f"{change_val}%" if change_val != '데이터 없음' else "데이터 없음"
+        # 플러스 기호 명시 처리
+        if change_str != "데이터 없음" and not change_str.startswith("-") and change_str != "0.00%":
+            change_str = f"+{change_str}"
+
+        # 2. 시가총액
+        cap_str = "데이터 없음"
+        cap_elem = soup.select_one('#_market_sum')
+        if cap_elem:
+            cap_val = cap_elem.text.replace(',', '').strip()
+            cap_num = int(cap_val) # 단위: 억원
+            if cap_num >= 10000:
+                cap_str = f"{cap_num // 10000}조 {cap_num % 10000}억"
+            else:
+                cap_str = f"{cap_num}억"
+                
+        return price_str, change_str, cap_str, ticker
+    except Exception as e:
+        return "조회 실패", "조회 실패", "조회 실패", ticker
+
+def get_yahoo_finance(ticker):
+    """미국 주식 전용: 야후 파이낸스 API"""
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period="5d")
+        if hist.empty: return "조회 실패", "조회 실패", "조회 실패", ticker
 
         current_price = float(hist['Close'].iloc[-1])
         prev_close = float(hist['Close'].iloc[-2]) if len(hist) > 1 else current_price
         
-        if current_price < 2000 and not is_korean: price_str = f"{current_price:,.2f}"
-        else: price_str = f"{current_price:,.0f}"
+        price_str = f"{current_price:,.2f}"
             
         if prev_close > 0:
             change_pct = ((current_price - prev_close) / prev_close) * 100
@@ -277,15 +293,26 @@ def fetch_realtime_data(ticker_symbol):
             
         try:
             market_cap = stock.fast_info['marketCap']
-            if market_cap > 1_000_000_000_000: cap_str = f"{market_cap / 1_000_000_000_000:,.1f}조"
-            elif market_cap > 100_000_000: cap_str = f"{market_cap / 100_000_000:,.0f}억"
-            else: cap_str = f"{market_cap:,.0f}"
+            if market_cap > 1_000_000_000_000: cap_str = f"${market_cap / 1_000_000_000_000:,.2f}T"
+            elif market_cap > 1_000_000_000: cap_str = f"${market_cap / 1_000_000_000:,.2f}B"
+            else: cap_str = f"${market_cap:,.0f}"
         except: cap_str = "확인 불가"
             
-        return price_str, change_str, cap_str, ticker_symbol
+        return price_str, change_str, cap_str, ticker
     except:
-        return "에러", "에러", "에러", ticker_symbol
+        return "조회 실패", "조회 실패", "조회 실패", ticker
 
+def fetch_realtime_data(ticker_symbol):
+    """데이터 수집 라우터 (숫자면 네이버, 영어면 야후)"""
+    ticker_symbol = ticker_symbol.strip()
+    if ticker_symbol.isdigit() and len(ticker_symbol) == 6:
+        return get_naver_finance(ticker_symbol)
+    else:
+        return get_yahoo_finance(ticker_symbol)
+
+# ==========================================
+# 5. Alpha-Logic 엔진
+# ==========================================
 def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     if not api_key: return None
     client = genai.Client(api_key=api_key)
@@ -314,7 +341,7 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     return None
 
 # ==========================================
-# 5. 메인 화면 구성 (렌더링 및 상태 분리)
+# 6. 메인 화면 구성
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["📋 종합 리포트", "💎 펀더멘털 분석", "⚡ 급등락 원인", "📡 종목 레이더"])
 
@@ -322,17 +349,18 @@ tab1, tab2, tab3, tab4 = st.tabs(["📋 종합 리포트", "💎 펀더멘털 �
 with tab1:
     st.subheader("📋 실시간 융합 리포트 분석")
     
-    company_1 = st.text_input("기업명 입력 (예: 삼성전자):", value=st.session_state["종합리포트_target"], key="c1_name")
+    company_1 = st.text_input("기업명 입력 (예: 삼성전자, 애플):", value=st.session_state["종합리포트_target"], key="c1_name")
     
     c_btn1, c_btn2 = st.columns(2)
     b1_run = c_btn1.button("▶️ 새로 분석 실행", key="b1")
     b1_update = c_btn2.button("🔄 불러온 데이터 갱신", key="u1")
     
     if (b1_run or b1_update) and company_1:
-        with st.spinner(f"[{company_1}] 주가 수집 및 분석 중..."):
+        with st.spinner(f"[{company_1}] 코드 확인 및 주가 스크래핑 중..."):
             smart_ticker = get_auto_ticker(company_1)
             live_price, live_change, live_cap, final_ticker = fetch_realtime_data(smart_ticker)
             
+        with st.spinner("AI 엔진 정밀 분석 중..."):
             sys_p = f"""너는 Alpha-Logic이다. 
             [시스템 수집 실시간 팩트] - 현재가: {live_price}, 변동률: {live_change}, 시가총액: {live_cap}
             위 데이터를 JSON에 기입하고, 정성적 분석은 사전 지식을 활용하라."""
@@ -345,7 +373,7 @@ with tab1:
 
     res_t1 = st.session_state["종합리포트_data"]
     if res_t1:
-        with st.expander("🤖 엔진의 논리 검증 과정 (Chain of Thought)"):
+        with st.expander("🤖 엔진의 논리 검증 과정"):
             st.write(res_t1.get('reasoning_process', '기록 없음'))
 
         col1, col2, col3, col4 = st.columns(4)
