@@ -3,3 +3,4 @@ google-genai
 pydantic
 requests
 yfinance
+beautifulsoup4
