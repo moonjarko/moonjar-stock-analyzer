@@ -34,6 +34,9 @@ class ReportData(BaseModel):
     price_change_percent: str = Field(description="프롬프트 주입 데이터 우선 사용")
     market_cap: str = Field(description="프롬프트 주입 데이터 우선 사용")
     industry_type: str
+    multiple_basis: str = Field(description="AI가 판단한 적합한 멀티플 기준 (예: PER, PBR, EV/EBITDA 등)")
+    current_multiple: str = Field(description="현재 기준 멀티플 (예: 15.2x)")
+    forward_multiple: str = Field(description="포워드(12M Fwd) 멀티플 (예: 12.5x)")
     timestamp: str
     recent_issues: List[IssueItem]
     future_issues: List[IssueItem]
@@ -108,7 +111,7 @@ class RadarData(BaseModel):
 # 2. UI 설정 및 세션(Session) 상태 초기화
 # ==========================================
 st.set_page_config(page_title="Alpha-Logic 분석기", layout="wide")
-st.title("📈 Alpha-Logic 주식 분석기 (한미 듀얼 파이프라인)")
+st.title("📈 Alpha-Logic 주식 분석기 (멀티플 지표 통합형)")
 
 tabs_names = ["종합리포트", "펀더멘털", "급등락", "레이더"]
 for t in tabs_names:
@@ -240,14 +243,12 @@ def get_auto_ticker(company_name):
 # 4. 듀얼 파이프라인 (네이버 스크래핑 vs 야후 파이낸스)
 # ==========================================
 def get_naver_finance(ticker):
-    """한국 주식 전용: 네이버 금융 웹 스크래퍼 (접근성 태그 활용)"""
     try:
         url = f"https://finance.naver.com/item/main.naver?code={ticker}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         res = requests.get(url, headers=headers)
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        # 1. 가격 및 등락률 (접근성 blind 태그 딕셔너리화)
         dts = soup.select('dl.blind dt')
         dds = soup.select('dl.blind dd')
         info_dict = {dt.text.strip(): dd.text.strip() for dt, dd in zip(dts, dds)}
@@ -255,27 +256,24 @@ def get_naver_finance(ticker):
         price_str = info_dict.get('현재가', '데이터 없음')
         change_val = info_dict.get('등락률', '데이터 없음')
         change_str = f"{change_val}%" if change_val != '데이터 없음' else "데이터 없음"
-        # 플러스 기호 명시 처리
         if change_str != "데이터 없음" and not change_str.startswith("-") and change_str != "0.00%":
             change_str = f"+{change_str}"
 
-        # 2. 시가총액
         cap_str = "데이터 없음"
         cap_elem = soup.select_one('#_market_sum')
         if cap_elem:
             cap_val = cap_elem.text.replace(',', '').strip()
-            cap_num = int(cap_val) # 단위: 억원
+            cap_num = int(cap_val)
             if cap_num >= 10000:
                 cap_str = f"{cap_num // 10000}조 {cap_num % 10000}억"
             else:
                 cap_str = f"{cap_num}억"
                 
         return price_str, change_str, cap_str, ticker
-    except Exception as e:
+    except:
         return "조회 실패", "조회 실패", "조회 실패", ticker
 
 def get_yahoo_finance(ticker):
-    """미국 주식 전용: 야후 파이낸스 API"""
     try:
         stock = yf.Ticker(ticker)
         hist = stock.history(period="5d")
@@ -303,7 +301,6 @@ def get_yahoo_finance(ticker):
         return "조회 실패", "조회 실패", "조회 실패", ticker
 
 def fetch_realtime_data(ticker_symbol):
-    """데이터 수집 라우터 (숫자면 네이버, 영어면 야후)"""
     ticker_symbol = ticker_symbol.strip()
     if ticker_symbol.isdigit() and len(ticker_symbol) == 6:
         return get_naver_finance(ticker_symbol)
@@ -360,10 +357,15 @@ with tab1:
             smart_ticker = get_auto_ticker(company_1)
             live_price, live_change, live_cap, final_ticker = fetch_realtime_data(smart_ticker)
             
-        with st.spinner("AI 엔진 정밀 분석 중..."):
+        with st.spinner("AI 엔진 밸류에이션 및 정밀 분석 중..."):
             sys_p = f"""너는 Alpha-Logic이다. 
             [시스템 수집 실시간 팩트] - 현재가: {live_price}, 변동률: {live_change}, 시가총액: {live_cap}
-            위 데이터를 JSON에 기입하고, 정성적 분석은 사전 지식을 활용하라."""
+            
+            [추가 지시사항]
+            1. 해당 기업의 업종과 비즈니스 모델을 분석하여 가장 적합한 밸류에이션 멀티플 기준(예: PER, PBR, EV/EBITDA, PSR 등)을 판별해 'multiple_basis'에 설정하라.
+            2. 너의 객관적 사전 지식을 활용하여 해당 기업의 '현재 멀티플', '포워드 멀티플', '애널리스트 평균 목표가'를 추정하여 기입하라. (정확한 수치를 모를 경우 합리적인 추정치나 밴드를 기입)
+            3. 위 실시간 수집 팩트는 지정된 항목에 그대로 기입하고 나머지 정성적 분석을 완성하라.
+            """
             
             res = ask_alpha_logic(f"{company_1} 종합 분석", sys_p, ReportData)
             if res:
@@ -376,14 +378,23 @@ with tab1:
         with st.expander("🤖 엔진의 논리 검증 과정"):
             st.write(res_t1.get('reasoning_process', '기록 없음'))
 
+        # 1행: 수집된 가격 정보
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("현재가/최근가", res_t1.get('current_price', 'N/A'))
         col2.metric("변동", res_t1.get('price_change_percent', 'N/A'))
         col3.metric("시가총액", res_t1.get('market_cap', 'N/A'))
         col4.metric("업종", res_t1.get('industry_type', 'N/A'))
         
-        st.markdown(f"### 🎯 투자의견: **{res_t1.get('consensus_opinion', 'N/A')}** (목표가: {res_t1.get('target_price', 'N/A')})")
-        st.info(f"**밸류에이션 요약**: {res_t1.get('valuation_summary', '')}")
+        # 2행: AI 판단 멀티플 및 목표가
+        st.markdown("### 📊 밸류에이션 지표 및 투자의견")
+        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+        m_col1.metric("적용 멀티플", res_t1.get('multiple_basis', 'N/A'))
+        m_col2.metric("현재 멀티플", res_t1.get('current_multiple', 'N/A'))
+        m_col3.metric("포워드 멀티플", res_t1.get('forward_multiple', 'N/A'))
+        m_col4.metric("목표가 (컨센서스)", res_t1.get('target_price', 'N/A'))
+        
+        st.markdown(f"**💡 투자의견:** {res_t1.get('consensus_opinion', 'N/A')} | **밸류에이션 요약:** {res_t1.get('valuation_summary', '')}")
+        st.divider()
         
         c_a, c_b = st.columns(2)
         with c_a:
