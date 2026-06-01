@@ -107,7 +107,7 @@ class RadarData(BaseModel):
 # 2. UI 설정 및 세션(Session) 상태 초기화
 # ==========================================
 st.set_page_config(page_title="Alpha-Logic 분석기", layout="wide")
-st.title("📈 Alpha-Logic 주식 분석기 (공유 및 저장 통합형)")
+st.title("📈 Alpha-Logic 주식 분석기 (종목 중심 관리형)")
 
 # 데이터를 유지하기 위한 세션 상태 초기화
 tabs_names = ["종합리포트", "펀더멘털", "급등락", "레이더"]
@@ -130,7 +130,7 @@ with st.sidebar:
     st.markdown("---")
 
 # ==========================================
-# 3. Firebase 통신 및 사이드바 공유 UI
+# 3. Firebase 통신 및 '종목 중심' 공유 UI
 # ==========================================
 def save_to_firestore(ticker, tab_name, data):
     if not PROJECT_ID: return
@@ -164,26 +164,62 @@ def load_history_from_firestore():
                     "json_data": json.loads(fields['json_data']['stringValue']),
                     "timestamp": fields['timestamp']['stringValue']
                 })
-            # 최신순 정렬 후 최대 15개 반환
+            # 최신순 정렬
             history.sort(key=lambda x: x['timestamp'], reverse=True)
-            return history[:15]
+            return history
     except:
         return []
     return []
 
-history_data = load_history_from_firestore()
-if history_data:
-    st.sidebar.markdown("### 🌐 최근 검색 종목 (전체 공유)")
-    for idx, item in enumerate(history_data):
-        # 화면에 표시될 버튼 이름 (예: [종합리포트] 삼성전자 (14:30))
-        time_str = item['timestamp'][11:16] 
-        btn_label = f"[{item['tab']}] {item['ticker']} ({time_str})"
-        
-        if st.sidebar.button(btn_label, key=f"hist_{idx}"):
-            # 클릭 시 해당 탭의 세션 스토리지에 데이터 저장
-            st.session_state[f"{item['tab']}_data"] = item['json_data']
-            st.session_state[f"{item['tab']}_target"] = item['ticker']
-            st.sidebar.success(f"데이터를 불러왔습니다. 우측 [{item['tab']}] 탭을 확인하세요.")
+all_history = load_history_from_firestore()
+
+# 팩트: 히스토리 데이터를 '종목'과 '레이더'로 분리하여 고유값만 추출합니다.
+stock_history = []
+radar_history = []
+seen_stocks = set()
+seen_radars = set()
+
+for item in all_history:
+    if item['tab'] == '레이더':
+        if item['ticker'] not in seen_radars:
+            seen_radars.add(item['ticker'])
+            radar_history.append(item)
+    else:
+        # 급등락 탭의 "삼성전자(최근 1주)" 형태에서 순수 종목명만 추출
+        raw_ticker = item['ticker'].split("(")[0].strip()
+        if raw_ticker not in seen_stocks:
+            seen_stocks.add(raw_ticker)
+            stock_history.append(raw_ticker)
+
+# 종목 중심 히스토리 사이드바 렌더링
+if stock_history:
+    st.sidebar.markdown("### 🏢 최근 검색 종목 (전체 공유)")
+    for stock in stock_history[:12]: # 최근 12개 종목
+        if st.sidebar.button(f"📊 {stock}", key=f"btn_stock_{stock}"):
+            # 1. 다른 종목의 기존 탭 세션 데이터 초기화
+            for t in ["종합리포트", "펀더멘털", "급등락"]:
+                st.session_state[f"{t}_data"] = None
+                st.session_state[f"{t}_target"] = stock
+            
+            # 2. DB에서 해당 종목의 최신 탭 데이터들을 긁어와서 한 번에 세션에 주입
+            loaded_tabs = set()
+            for item in all_history:
+                raw_item_ticker = item['ticker'].split("(")[0].strip()
+                if raw_item_ticker == stock and item['tab'] not in loaded_tabs and item['tab'] != '레이더':
+                    st.session_state[f"{item['tab']}_data"] = item['json_data']
+                    if item['tab'] == '급등락':
+                        st.session_state["급등락_target"] = item['ticker'] # 기간 정보 보존
+                    loaded_tabs.add(item['tab'])
+                    
+            st.sidebar.success(f"[{stock}] 데이터를 통합 로드했습니다. 본문을 확인하세요.")
+
+if radar_history:
+    st.sidebar.markdown("### 📡 최근 레이더 조건")
+    for item in radar_history[:5]:
+        if st.sidebar.button(f"🔍 {item['ticker']}", key=f"btn_radar_{item['ticker']}"):
+            st.session_state["레이더_data"] = item['json_data']
+            st.session_state["레이더_target"] = item['ticker']
+            st.sidebar.success(f"[{item['ticker']}] 레이더를 불러왔습니다.")
 
 # ==========================================
 # 4. 기능 엔진 (종목코드 변환, 실시간 주가, AI 파이프라인)
@@ -286,7 +322,6 @@ tab1, tab2, tab3, tab4 = st.tabs(["📋 종합 리포트", "💎 펀더멘털 �
 with tab1:
     st.subheader("📋 실시간 융합 리포트 분석")
     
-    # 세션에 불러와진 타겟이 있으면 입력창에 반영
     company_1 = st.text_input("기업명 입력 (예: 삼성전자):", value=st.session_state["종합리포트_target"], key="c1_name")
     
     c_btn1, c_btn2 = st.columns(2)
@@ -304,12 +339,10 @@ with tab1:
             
             res = ask_alpha_logic(f"{company_1} 종합 분석", sys_p, ReportData)
             if res:
-                # 분석 성공 시 상태 저장 및 DB 업로드
                 st.session_state["종합리포트_data"] = res
                 st.session_state["종합리포트_target"] = company_1
                 save_to_firestore(company_1, "종합리포트", res)
 
-    # 데이터 렌더링 블록 (분석 버튼을 안 눌러도 세션에 데이터가 있으면 항상 그려줌)
     res_t1 = st.session_state["종합리포트_data"]
     if res_t1:
         with st.expander("🤖 엔진의 논리 검증 과정 (Chain of Thought)"):
@@ -375,8 +408,7 @@ with tab2:
 with tab3:
     st.subheader("⚡ 급등락 원인 추적")
     
-    # 텍스트 입력창 (불러온 데이터가 '삼성전자(최근 1주)' 형태일 경우를 대비해 괄호 제거 로직 추가)
-    c3_val = st.session_state["급등락_target"].split("(")[0] if "(" in st.session_state["급등락_target"] else st.session_state["급등락_target"]
+    c3_val = st.session_state["급등락_target"].split("(")[0].strip() if "(" in st.session_state["급등락_target"] else st.session_state["급등락_target"]
     company_3 = st.text_input("종목명 입력:", value=c3_val, key="c3")
     period = st.selectbox("기간 선택", ["최근 1주", "최근 1개월", "최근 1년"])
     
