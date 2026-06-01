@@ -111,7 +111,7 @@ class RadarData(BaseModel):
 # 2. UI 설정 및 세션(Session) 상태 초기화
 # ==========================================
 st.set_page_config(page_title="Alpha-Logic 분석기", layout="wide")
-st.title("📈 Alpha-Logic 주식 분석기 (멀티플 지표 통합형)")
+st.title("📈 Alpha-Logic 주식 분석기 (오류 추적 강화형)")
 
 tabs_names = ["종합리포트", "펀더멘털", "급등락", "레이더"]
 for t in tabs_names:
@@ -308,7 +308,7 @@ def fetch_realtime_data(ticker_symbol):
         return get_yahoo_finance(ticker_symbol)
 
 # ==========================================
-# 5. Alpha-Logic 엔진
+# 5. Alpha-Logic 엔진 (오류 추적 강화)
 # ==========================================
 def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     if not api_key: return None
@@ -323,6 +323,8 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     enhanced_system_prompt = f"{system_prompt}\n\n{anti_hallucination_rules}\n\n[중요] 반드시 다음 JSON 스키마를 완벽히 따르라:\n{schema_json_string}"
     
     model_candidates = ['gemini-2.5-flash', 'gemini-3.5-flash', 'gemini-2.0-flash']
+    last_error_message = "알 수 없는 에러"
+    
     for model_name in model_candidates:
         try:
             response = client.models.generate_content(
@@ -330,11 +332,19 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
                 config=types.GenerateContentConfig(system_instruction=enhanced_system_prompt, temperature=0.0)
             )
             raw_text = response.text.strip().replace("```json", "").replace("```", "").strip()
+            
+            # JSON 디코딩 시도
             return json.loads(raw_text)
+            
+        except json.JSONDecodeError as je:
+            last_error_message = f"[{model_name}] JSON 구조화 실패: {str(je)} | 반환값 일부: {raw_text[:50]}..."
+            continue # 파싱 실패 시 다음 모델로 재시도
         except Exception as e:
-            if "404" in str(e) or "429" in str(e) or "Quota" in str(e): continue 
-            else: break
-    st.error("분석 엔진 호출에 실패했습니다.")
+            last_error_message = f"[{model_name}] API 통신 에러: {str(e)}"
+            continue # API 에러 발생 시 다음 모델로 재시도
+            
+    # 모든 모델이 실패했을 경우, 화면에 정확한 원인을 노출합니다.
+    st.error(f"분석 엔진 호출 실패. 상세 사유:\n{last_error_message}")
     return None
 
 # ==========================================
