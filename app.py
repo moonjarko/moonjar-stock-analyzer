@@ -111,7 +111,7 @@ class RadarData(BaseModel):
 # 2. UI 설정 및 세션(Session) 상태 초기화
 # ==========================================
 st.set_page_config(page_title="Alpha-Logic 분석기", layout="wide")
-st.title("📈 Alpha-Logic 주식 분석기 (오류 추적 강화형)")
+st.title("📈 Alpha-Logic 주식 분석기 (오류 추적 및 통합 DB형)")
 
 tabs_names = ["종합리포트", "펀더멘털", "급등락", "레이더"]
 for t in tabs_names:
@@ -132,9 +132,15 @@ with st.sidebar:
         st.error("⚠️ 클라우드 비밀 금고(Secrets) 설정이 필요합니다.")
     st.markdown("---")
 
+# ==========================================
+# 3. Firebase 통신 (덮어쓰기 로직 적용)
+# ==========================================
 def save_to_firestore(ticker, tab_name, data):
     if not PROJECT_ID: return
-    url = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents/analysis_logs"
+    # 팩트: 무한 증식을 막기 위해 고유한 문서 ID(예: 삼성전자_종합리포트)를 생성하여 덮어씁니다.
+    doc_id = f"{ticker}_{tab_name}".replace(" ", "_").replace("/", "_").replace("(", "_").replace(")", "_")
+    url = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents/analysis_logs/{doc_id}"
+    
     payload = {
         "fields": {
             "ticker": {"stringValue": ticker},
@@ -144,7 +150,8 @@ def save_to_firestore(ticker, tab_name, data):
         }
     }
     try:
-        requests.post(url, json=payload)
+        # POST 대신 PATCH를 사용하여 덮어쓰기(Upsert) 진행
+        requests.patch(url, json=payload)
     except:
         pass
 
@@ -164,6 +171,7 @@ def load_history_from_firestore():
                     "json_data": json.loads(fields['json_data']['stringValue']),
                     "timestamp": fields['timestamp']['stringValue']
                 })
+            # 최신순 정렬
             history.sort(key=lambda x: x['timestamp'], reverse=True)
             return history
     except:
@@ -215,7 +223,7 @@ if radar_history:
             st.sidebar.success(f"[{item['ticker']}] 레이더를 불러왔습니다.")
 
 # ==========================================
-# 3. AI 기반 자동 종목코드(Ticker) 변환기
+# 4. AI 기반 자동 종목코드(Ticker) 변환기
 # ==========================================
 def get_auto_ticker(company_name):
     if not api_key: return company_name
@@ -240,7 +248,7 @@ def get_auto_ticker(company_name):
         return company_name
 
 # ==========================================
-# 4. 듀얼 파이프라인 (네이버 스크래핑 vs 야후 파이낸스)
+# 5. 듀얼 파이프라인 (네이버 스크래핑 vs 야후 파이낸스)
 # ==========================================
 def get_naver_finance(ticker):
     try:
@@ -308,7 +316,7 @@ def fetch_realtime_data(ticker_symbol):
         return get_yahoo_finance(ticker_symbol)
 
 # ==========================================
-# 5. Alpha-Logic 엔진 (오류 추적 강화)
+# 6. Alpha-Logic 엔진 (오류 추적 강화)
 # ==========================================
 def ask_alpha_logic(query: str, system_prompt: str, schema_class):
     if not api_key: return None
@@ -332,23 +340,20 @@ def ask_alpha_logic(query: str, system_prompt: str, schema_class):
                 config=types.GenerateContentConfig(system_instruction=enhanced_system_prompt, temperature=0.0)
             )
             raw_text = response.text.strip().replace("```json", "").replace("```", "").strip()
-            
-            # JSON 디코딩 시도
             return json.loads(raw_text)
             
         except json.JSONDecodeError as je:
             last_error_message = f"[{model_name}] JSON 구조화 실패: {str(je)} | 반환값 일부: {raw_text[:50]}..."
-            continue # 파싱 실패 시 다음 모델로 재시도
+            continue
         except Exception as e:
             last_error_message = f"[{model_name}] API 통신 에러: {str(e)}"
-            continue # API 에러 발생 시 다음 모델로 재시도
+            continue
             
-    # 모든 모델이 실패했을 경우, 화면에 정확한 원인을 노출합니다.
     st.error(f"분석 엔진 호출 실패. 상세 사유:\n{last_error_message}")
     return None
 
 # ==========================================
-# 6. 메인 화면 구성
+# 7. 메인 화면 구성 (버튼 통폐합 적용)
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["📋 종합 리포트", "💎 펀더멘털 분석", "⚡ 급등락 원인", "📡 종목 레이더"])
 
@@ -356,13 +361,13 @@ tab1, tab2, tab3, tab4 = st.tabs(["📋 종합 리포트", "💎 펀더멘털 �
 with tab1:
     st.subheader("📋 실시간 융합 리포트 분석")
     
-    company_1 = st.text_input("기업명 입력 (예: 삼성전자, 애플):", value=st.session_state["종합리포트_target"], key="c1_name")
+    col_input, col_btn = st.columns([3, 1])
+    with col_input:
+        company_1 = st.text_input("기업명 입력 (예: 삼성전자, 애플):", value=st.session_state["종합리포트_target"], key="c1_name", label_visibility="collapsed")
+    with col_btn:
+        b1_run = st.button("▶️ 분석 실행 / 최신 갱신", key="b1", use_container_width=True)
     
-    c_btn1, c_btn2 = st.columns(2)
-    b1_run = c_btn1.button("▶️ 새로 분석 실행", key="b1")
-    b1_update = c_btn2.button("🔄 불러온 데이터 갱신", key="u1")
-    
-    if (b1_run or b1_update) and company_1:
+    if b1_run and company_1:
         with st.spinner(f"[{company_1}] 코드 확인 및 주가 스크래핑 중..."):
             smart_ticker = get_auto_ticker(company_1)
             live_price, live_change, live_cap, final_ticker = fetch_realtime_data(smart_ticker)
@@ -372,9 +377,9 @@ with tab1:
             [시스템 수집 실시간 팩트] - 현재가: {live_price}, 변동률: {live_change}, 시가총액: {live_cap}
             
             [추가 지시사항]
-            1. 해당 기업의 업종과 비즈니스 모델을 분석하여 가장 적합한 밸류에이션 멀티플 기준(예: PER, PBR, EV/EBITDA, PSR 등)을 판별해 'multiple_basis'에 설정하라.
-            2. 너의 객관적 사전 지식을 활용하여 해당 기업의 '현재 멀티플', '포워드 멀티플', '애널리스트 평균 목표가'를 추정하여 기입하라. (정확한 수치를 모를 경우 합리적인 추정치나 밴드를 기입)
-            3. 위 실시간 수집 팩트는 지정된 항목에 그대로 기입하고 나머지 정성적 분석을 완성하라.
+            1. 기업 업종을 분석하여 가장 적합한 멀티플 기준(PER, PBR, EV/EBITDA 등)을 판별해 'multiple_basis'에 설정하라.
+            2. 객관적 사전 지식을 활용해 '현재 멀티플', '포워드 멀티플', '목표가'를 추정해 기입하라.
+            3. 위 수집된 실시간 팩트는 그대로 기입하라.
             """
             
             res = ask_alpha_logic(f"{company_1} 종합 분석", sys_p, ReportData)
@@ -382,20 +387,19 @@ with tab1:
                 st.session_state["종합리포트_data"] = res
                 st.session_state["종합리포트_target"] = company_1
                 save_to_firestore(company_1, "종합리포트", res)
+                st.rerun() # 저장 후 사이드바 갱신을 위해 화면 새로고침
 
     res_t1 = st.session_state["종합리포트_data"]
     if res_t1:
         with st.expander("🤖 엔진의 논리 검증 과정"):
             st.write(res_t1.get('reasoning_process', '기록 없음'))
 
-        # 1행: 수집된 가격 정보
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("현재가/최근가", res_t1.get('current_price', 'N/A'))
         col2.metric("변동", res_t1.get('price_change_percent', 'N/A'))
         col3.metric("시가총액", res_t1.get('market_cap', 'N/A'))
         col4.metric("업종", res_t1.get('industry_type', 'N/A'))
         
-        # 2행: AI 판단 멀티플 및 목표가
         st.markdown("### 📊 밸류에이션 지표 및 투자의견")
         m_col1, m_col2, m_col3, m_col4 = st.columns(4)
         m_col1.metric("적용 멀티플", res_t1.get('multiple_basis', 'N/A'))
@@ -419,13 +423,14 @@ with tab1:
 # --- 탭 2 : 펀더멘털 분석 ---
 with tab2:
     st.subheader("💎 본질가치 및 해자 분석")
-    company_2 = st.text_input("기업명 입력:", value=st.session_state["펀더멘털_target"], key="c2")
     
-    c_btn1, c_btn2 = st.columns(2)
-    b2_run = c_btn1.button("▶️ 새로 분석 실행", key="b2")
-    b2_update = c_btn2.button("🔄 불러온 데이터 갱신", key="u2")
+    col_input, col_btn = st.columns([3, 1])
+    with col_input:
+        company_2 = st.text_input("기업명 입력:", value=st.session_state["펀더멘털_target"], key="c2", label_visibility="collapsed")
+    with col_btn:
+        b2_run = st.button("▶️ 분석 실행 / 최신 갱신", key="b2", use_container_width=True)
     
-    if (b2_run or b2_update) and company_2:
+    if b2_run and company_2:
         with st.spinner("지식 기반 지표 수집 및 구조화 중..."):
             sys_p = "너는 Alpha-Logic이다. 팩트를 기반으로 업종에 맞는 멀티플을 적용하여 분석하라."
             res = ask_alpha_logic(f"{company_2} 펀더멘털 정밀 분석", sys_p, FundamentalData)
@@ -433,6 +438,7 @@ with tab2:
                 st.session_state["펀더멘털_data"] = res
                 st.session_state["펀더멘털_target"] = company_2
                 save_to_firestore(company_2, "펀더멘털", res)
+                st.rerun()
 
     res_t2 = st.session_state["펀더멘털_data"]
     if res_t2:
@@ -458,14 +464,16 @@ with tab3:
     st.subheader("⚡ 급등락 원인 추적")
     
     c3_val = st.session_state["급등락_target"].split("(")[0].strip() if "(" in st.session_state["급등락_target"] else st.session_state["급등락_target"]
-    company_3 = st.text_input("종목명 입력:", value=c3_val, key="c3")
-    period = st.selectbox("기간 선택", ["최근 1주", "최근 1개월", "최근 1년"])
     
-    c_btn1, c_btn2 = st.columns(2)
-    b3_run = c_btn1.button("▶️ 새로 분석 실행", key="b3")
-    b3_update = c_btn2.button("🔄 불러온 데이터 갱신", key="u3")
+    col_input1, col_input2, col_btn = st.columns([2, 1, 1])
+    with col_input1:
+        company_3 = st.text_input("종목명 입력:", value=c3_val, key="c3", label_visibility="collapsed")
+    with col_input2:
+        period = st.selectbox("기간 선택", ["최근 1주", "최근 1개월", "최근 1년"], label_visibility="collapsed")
+    with col_btn:
+        b3_run = st.button("▶️ 분석 실행 / 최신 갱신", key="b3", use_container_width=True)
     
-    if (b3_run or b3_update) and company_3:
+    if b3_run and company_3:
         with st.spinner("시장 데이터 교차 검증 중..."):
             sys_p = f"너는 Alpha-Logic이다. 사전 학습된 지식을 활용해 {period} 동안의 주가 변동 원인을 찾아라."
             res = ask_alpha_logic(f"{company_3} {period} 주가 변동 원인", sys_p, VolatilityData)
@@ -474,6 +482,7 @@ with tab3:
                 st.session_state["급등락_data"] = res
                 st.session_state["급등락_target"] = target_str
                 save_to_firestore(target_str, "급등락", res)
+                st.rerun()
 
     res_t3 = st.session_state["급등락_data"]
     if res_t3:
@@ -490,13 +499,14 @@ with tab3:
 with tab4:
     st.subheader("📡 종목 레이더 (조건부 스크리닝)")
     condition_val = st.session_state["레이더_target"] if st.session_state["레이더_target"] else "저PBR 리레이팅"
-    condition = st.text_input("조건 입력 (예: 배당 성장주):", value=condition_val, key="c4")
     
-    c_btn1, c_btn2 = st.columns(2)
-    b4_run = c_btn1.button("▶️ 새로 레이더 가동", key="b4")
-    b4_update = c_btn2.button("🔄 불러온 조건 갱신", key="u4")
+    col_input, col_btn = st.columns([3, 1])
+    with col_input:
+        condition = st.text_input("조건 입력 (예: 배당 성장주):", value=condition_val, key="c4", label_visibility="collapsed")
+    with col_btn:
+        b4_run = st.button("▶️ 레이더 가동 / 갱신", key="b4", use_container_width=True)
     
-    if (b4_run or b4_update) and condition:
+    if b4_run and condition:
         with st.spinner("지식 기반 스크리닝 진행 중..."):
             sys_p = "너는 Alpha-Logic이다. 제시된 조건에 정확히 부합하는 종목을 탐색하고 근거를 명시하라."
             res = ask_alpha_logic(f"조건 [{condition}] 종목 수집", sys_p, RadarData)
@@ -504,6 +514,7 @@ with tab4:
                 st.session_state["레이더_data"] = res
                 st.session_state["레이더_target"] = condition
                 save_to_firestore(condition, "레이더", res)
+                st.rerun()
 
     res_t4 = st.session_state["레이더_data"]
     if res_t4:
